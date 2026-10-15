@@ -1,0 +1,137 @@
+name: chublog
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  init:
+    build: { context: ., target: init, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    volumes:
+      - content:/data
+      - authorization:/auth
+      - ingress:/srv/ingress
+      - database:/db-data
+      - db-logs:/db-logs
+    restart: "no"
+    network_mode: none
+    logging: *logging
+  api:
+    build: { context: ., target: api, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    depends_on:
+      init: { condition: service_completed_successfully }
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?Set ADMIN_PASSWORD_HASH}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
+      CHUSQL_ADDRESS: db:7777
+      CHUSQL_USER: chublog_index
+      CHUSQL_PASSWORD: ${CHUSQL_PASSWORD:?Set CHUSQL_PASSWORD}
+      CHUSQL_DATABASE: chublog
+    volumes:
+      - content:/data
+      - authorization:/auth
+      - ingress:/srv/ingress:ro
+    read_only: true
+    tmpfs: ["/tmp:size=16m,noexec,nosuid"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:3001/api/health]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    logging: *logging
+  ssh:
+    build: { context: ., target: ssh, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    depends_on:
+      init: { condition: service_completed_successfully }
+      api: { condition: service_healthy }
+    environment:
+      CHUBLOG_SSH_CONFIG: /auth/publishers.json
+    ports: ["${SSH_BIND:-0.0.0.0}:${SSH_PORT:-2222}:2222"]
+    volumes:
+      - ingress:/srv/ingress
+      - authorization:/auth:ro
+      - ssh-host-keys:/host-keys
+    read_only: true
+    tmpfs: ["/run:size=8m,noexec,nosuid", "/tmp:size=16m,noexec,nosuid"]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, SYS_CHROOT]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.0
+    networks: [ssh]
+    restart: unless-stopped
+    logging: *logging
+  db:
+    build: { context: ., target: database, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    depends_on:
+      init: { condition: service_completed_successfully }
+    environment:
+      CHUSQL_ROOT_PASSWORD: ${CHUSQL_ROOT_PASSWORD:?Set CHUSQL_ROOT_PASSWORD}
+    volumes:
+      - database:/var/lib/chusql
+      - db-logs:/var/log/chusql
+    read_only: true
+    tmpfs: ["/tmp:size=16m,noexec,nosuid"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 1.0
+    networks: [backend]
+    restart: unless-stopped
+    logging: *logging
+  db-init:
+    build: { context: ., target: api, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    profiles: [setup]
+    entrypoint: [chublog-api, provision-db]
+    environment:
+      CHUSQL_ADDRESS: db:7777
+      CHUSQL_ROOT_PASSWORD: ${CHUSQL_ROOT_PASSWORD:?Set CHUSQL_ROOT_PASSWORD}
+      CHUSQL_PASSWORD: ${CHUSQL_PASSWORD:?Set CHUSQL_PASSWORD}
+    depends_on: [db]
+    networks: [backend]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    restart: "no"
+    logging: *logging
+  caddy:
+    image: caddy:2
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    ports: ["${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80", "${HTTP_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    networks: [backend, edge]
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+    logging: *logging
+networks:
+  backend: { internal: true }
+  ssh: {}
+  edge: {}
+volumes:
+  content: {}
+  ingress: {}
+  authorization: {}
+  ssh-host-keys: {}
+  database: {}
+  db-logs: {}
+  caddy-data: {}
+  caddy-config: {}

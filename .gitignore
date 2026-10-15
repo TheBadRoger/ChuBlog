@@ -1,0 +1,11 @@
+/target/
+/data/
+.env
+node_modules/
+dist/
+.astro/
+*.log
+/deploy/bin/
+/deploy/secrets/
+__pycache__/
+*.pyc
