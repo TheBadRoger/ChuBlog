@@ -11,7 +11,7 @@ SCRIPT = Path(__file__).with_name('init-deps.py')
 
 
 class InitializeDependencies(unittest.TestCase):
-    def test_local_rewrite_fetches_only_pinned_dependency_commits(self):
+    def test_https_default_and_authorized_ssh_fallback_preserve_pins(self):
         with tempfile.TemporaryDirectory(prefix='chublog deps ') as temporary:
             root = Path(temporary)
             project = root / 'blog'
@@ -46,7 +46,7 @@ class InitializeDependencies(unittest.TestCase):
             for name in ['ChuSQL', 'ChuSQL-RustDriver']:
                 self.assertEqual((project / f'external/{name}/source.txt').read_text(), f'{name} committed source')
             self.assertTrue(all(line.startswith('160000') for line in git(project, 'ls-files', '--stage', 'external').splitlines()))
-            # A fresh clone must fall back when localhost SSH fails. Redirect only the test's
+            # A fresh clone must use HTTPS without attempting SSH. Redirect only the test's
             # GitHub remotes to local fixtures, so this verifies fallback without network access.
             fresh = root / 'fresh'
             git(project, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'Pinned dependencies')
@@ -56,12 +56,19 @@ class InitializeDependencies(unittest.TestCase):
             fallback_env = {**env, 'GIT_ALLOW_PROTOCOL': 'file', 'GIT_CONFIG_COUNT': '2'}
             for i, (name, source) in enumerate(zip(['ChuSQL', 'ChuSQL-RustDriver'], sources)):
                 fallback_env[f'GIT_CONFIG_KEY_{i}'] = f'url.{Path(source).as_uri()}.insteadOf'
-                fallback_env[f'GIT_CONFIG_VALUE_{i}'] = f'git@github.com:TheBadRoger/{name}.git'
+                fallback_env[f'GIT_CONFIG_VALUE_{i}'] = f'https://github.com/TheBadRoger/{name}.git'
             subprocess.run(['python3', 'scripts/init-deps.py'], cwd=fresh, env=fallback_env, check=True, capture_output=True)
             for name in ['ChuSQL', 'ChuSQL-RustDriver']:
                 self.assertEqual((fresh / f'external/{name}/source.txt').read_text(), f'{name} committed source')
-                self.assertEqual(git(fresh / f'external/{name}', 'config', '--get', 'remote.origin.url'), f'git@github.com:TheBadRoger/{name}.git')
-            # Also cover an accessible but empty localhost bare repository: the initial
+                self.assertEqual(git(fresh / f'external/{name}', 'config', '--get', 'remote.origin.url'), f'https://github.com/TheBadRoger/{name}.git')
+            unavailable = root / 'unavailable'
+            git(root, 'clone', '--no-local', str(project), str(unavailable))
+            (unavailable / 'scripts').mkdir()
+            shutil.copy2(SCRIPT, unavailable / 'scripts/init-deps.py')
+            subprocess.run(['python3', 'scripts/init-deps.py', '--prefer-ssh'], cwd=unavailable, env=fallback_env, check=True, capture_output=True)
+            for name in ['ChuSQL', 'ChuSQL-RustDriver']:
+                self.assertEqual((unavailable / f'external/{name}/source.txt').read_text(), f'{name} committed source')
+            # Also cover an accessible but empty authorized SSH bare repository: the initial
             # submodule clone succeeds, fetching the pinned commit fails, then GitHub recovers.
             empty = root / 'empty.git'
             git(root, 'init', '--bare', str(empty))
@@ -74,8 +81,8 @@ class InitializeDependencies(unittest.TestCase):
                 empty_source = root / f'empty-{name}.git'
                 git(root, 'clone', '--bare', str(empty), str(empty_source))
                 partial_env[f'GIT_CONFIG_KEY_{i}'] = f'url.{empty_source.as_uri()}.insteadOf'
-                partial_env[f'GIT_CONFIG_VALUE_{i}'] = f'ssh://git@localhost/srv/git/{name}.git'
-            result = subprocess.run(['python3', 'scripts/init-deps.py'], cwd=partial, env=partial_env, text=True, capture_output=True)
+                partial_env[f'GIT_CONFIG_VALUE_{i}'] = f'ChuGit:/srv/git/{name}.git'
+            result = subprocess.run(['python3', 'scripts/init-deps.py', '--prefer-ssh'], cwd=partial, env=partial_env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             for name in ['ChuSQL', 'ChuSQL-RustDriver']:
                 self.assertEqual((partial / f'external/{name}/source.txt').read_text(), f'{name} committed source')

@@ -13,7 +13,7 @@
 - [x] pre-receive 校验 Git quarantine 内的候选提交：单次一个线性提交、仅 main、禁止删除分支、强推、标签及其他分支。
 - [x] Markdown Frontmatter、路径、文件模式、大小配额、图片类型/内容/尺寸与链接安全校验；拒绝原始 HTML、隐藏控制符、符号链接、可执行文件及额外文件。
 - [x] 独立 SSH 接收仓库与 API 正式仓库；从 Git 恢复公开快照，草稿不出现在公开 API/资源接口。
-- [x] 外部 `ChuSQL`/`ChuSQL-RustDriver` 子模块配置、本机 SSH 优先拉取与 GitHub 回退；ChuSQL 公开元数据/标签索引及失败自动重建，数据库不承担唯一内容或账户存储。
+- [x] 外部 `ChuSQL`/`ChuSQL-RustDriver` 子模块配置、GitHub HTTPS 默认来源及授权设备 SSH 优先/HTTPS 回退；ChuSQL 公开元数据/标签索引及失败自动重建，数据库不承担唯一内容或账户存储。
 - [x] Docker Compose、Caddy 反向代理、独立持久卷、容器资源限制、最小进程身份与网络隔离。
 - [x] 后端/驱动自动测试、真实容器 SSH 联调脚本、运行/API/架构说明。
 

@@ -12,7 +12,6 @@ ChuBlog/
 ├── external/
 │   ├── ChuSQL/             # Git 子模块，主仓库只记录版本指针
 │   └── ChuSQL-RustDriver/  # Git 子模块
-├── config/git-local.config
 └── scripts/init-deps.py
 ```
 
@@ -22,12 +21,18 @@ ChuBlog/
 python3 scripts/init-deps.py
 ```
 
-子模块登记地址为 `ChuGit:/srv/git/ChuSQL.git` 和 `ChuGit:/srv/git/ChuSQL-RustDriver.git`。初始化脚本按以下顺序获取**固定提交**：
+默认依赖地址为 GitHub HTTPS，无需服务器 SSH 公钥或 `ChuGit` 别名：
 
-1. 本机 SSH：`ssh://git@localhost/srv/git/ChuSQL.git`、`ssh://git@localhost/srv/git/ChuSQL-RustDriver.git`。
-2. 本机连接、访问或获取固定提交失败，回退到 `git@github.com:TheBadRoger/ChuSQL.git`、`git@github.com:TheBadRoger/ChuSQL-RustDriver.git`。
+- `https://github.com/TheBadRoger/ChuSQL.git`
+- `https://github.com/TheBadRoger/ChuSQL-RustDriver.git`
 
-已正确初始化的固定版本直接复用；有未提交修改时拒绝覆盖。不会因回退而改为任意最新分支。`config/git-local.config` 提供 `ChuGit`/自建服务器地址到 localhost SSH 的可选 `insteadOf` 映射；刻意不改写 GitHub 地址，以免回退又被映射回本机。脚本不启用全局 `file` 协议，也不递归初始化未知子模块。
+已授权设备可显式优先使用自建服务器；SSH 连接、访问或固定提交获取失败时，自动回退到上面的 GitHub HTTPS 地址：
+
+```sh
+python3 scripts/init-deps.py --prefer-ssh
+```
+
+该选项先尝试 `ChuGit:/srv/git/ChuSQL.git` 和 `ChuGit:/srv/git/ChuSQL-RustDriver.git`，需要设备已配置对应 SSH 身份。已正确初始化的固定版本直接复用，有未提交修改时拒绝覆盖；回退不改为任意最新分支。服务器已有的 Git 地址覆盖由服务器自行管理，项目不设置全局 `insteadOf`、localhost 映射、OS 用户或服务器 SSH 配置。
 
 开发电脑仍可显式选择已有本地来源（仅开发覆盖参数，不是服务器默认流程）；只读取已提交版本：
 
@@ -46,25 +51,13 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-部署基于 Debian 13。项目和依赖工作目录应归 `deploy` 用户所有；为该用户配置可访问 `git@localhost` 与 GitHub 的 SSH 密钥，并预先核对两端主机密钥。私钥留在主机，不能放进镜像。
-
-推荐入口（以 root 调 Docker，Git 与编译均以 deploy 运行）：
+部署基于 Debian 13。`scripts/deploy.sh` 会使用同一个依赖初始化脚本，再构建外部数据库与 Docker 镜像；沿用运行者现有的 Git 配置，不在项目内覆盖服务器环境。
 
 ```sh
-sudo /srv/apps/ChuBlog/scripts/deploy.sh
+scripts/deploy.sh
 ```
 
-脚本先以 `sudo -H -u deploy` 运行 `init-deps.py`，再构建外部项目与 Docker 镜像。默认依赖工作树位于 `/srv/apps/ChuBlog/external/`。其数据库拉取等价于你指定的方式：
-
-```sh
-sudo -u deploy git clone ssh://git@localhost/srv/git/ChuSQL.git /srv/apps/chusql
-# 本机来源失败时：
-sudo -u deploy git clone git@github.com:TheBadRoger/ChuSQL.git /srv/apps/chusql
-```
-
-如选择这个独立数据库目录，可用 `prepare-deploy.py --chusql-source /srv/apps/chusql --build-database` 构建；默认部署入口使用子模块固定版本。不要将数据库单独目录的源代码或产物加入博客提交。
-
-首次部署先准备 `.env`，再运行入口。也可以手动执行以下同架构构建步骤；远程服务器上的 Git/编译命令应以 `deploy` 身份执行，Docker 命令由 root 执行：
+首次部署先准备 `.env`；也可以手动执行以下同架构构建步骤：
 
 ```sh
 # ChuSQL 尚未编译时，先按其项目说明构建 Rust 存储库、server 与 bootstrap。
