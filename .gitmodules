@@ -1,0 +1,6 @@
+[submodule "external/ChuSQL"]
+	path = external/ChuSQL
+	url = ChuGit:/srv/git/ChuSQL.git
+[submodule "external/ChuSQL-RustDriver"]
+	path = external/ChuSQL-RustDriver
+	url = ChuGit:/srv/git/ChuSQL-RustDriver.git

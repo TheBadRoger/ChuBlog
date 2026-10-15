@@ -7,13 +7,13 @@
 - [x] Rust/Axum API：公开文章列表、详情、图片、基础统计、健康接口。
 - [x] 用户注册、登录、退出、修改密码；Argon2id、服务端会话、Cookie、Origin/CSRF 校验。
 - [x] reader / publisher / admin 权限；注册不能自选权限，管理员单独审批发布权、停用用户，修改权限使已有会话失效。
-- [x] 用户上传/轮换自己的 Ed25519 公钥，公钥存在与具有发布权分别检查。
+- [x] 用户上传/轮换自己的 Ed25519/RSA 公钥，公钥存在与具有发布权分别检查。
 - [x] OpenSSH 强制命令：仅固定仓库的 Git push/clone；禁用 shell、SFTP/SCP、TTY、代理/端口转发、隧道与用户环境。
 - [x] 发布者 slug 前缀授权，不允许重叠授权或修改其他命名空间。
 - [x] pre-receive 校验 Git quarantine 内的候选提交：单次一个线性提交、仅 main、禁止删除分支、强推、标签及其他分支。
 - [x] Markdown Frontmatter、路径、文件模式、大小配额、图片类型/内容/尺寸与链接安全校验；拒绝原始 HTML、隐藏控制符、符号链接、可执行文件及额外文件。
 - [x] 独立 SSH 接收仓库与 API 正式仓库；从 Git 恢复公开快照，草稿不出现在公开 API/资源接口。
-- [x] 项目内 `crates/chusql-driver` 副本；ChuSQL 公开元数据/标签索引及失败自动重建，数据库不承担唯一内容或账户存储。
+- [x] 外部 `ChuSQL`/`ChuSQL-RustDriver` 子模块配置与本地路径优先映射；ChuSQL 公开元数据/标签索引及失败自动重建，数据库不承担唯一内容或账户存储。
 - [x] Docker Compose、Caddy 反向代理、独立持久卷、容器资源限制、最小进程身份与网络隔离。
 - [x] 后端/驱动自动测试、真实容器 SSH 联调脚本、运行/API/架构说明。
 

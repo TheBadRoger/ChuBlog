@@ -1,17 +1,37 @@
 # ChuBlog
 
-Rust/Axum 博客后端。文章作者在本地编辑 Markdown，通过受限 SSH Git 推送发布。注册、登录、权限管理使用 HTTP API；文章仅通过 Git 修改。ChuSQL 使用项目内复制的 `crates/chusql-driver`，只存可重建索引。
+Rust/Axum 博客后端。文章作者在本地编辑 Markdown，通过受限 SSH Git 推送发布。注册、登录、权限管理使用 HTTP API；文章仅通过 Git 修改。ChuSQL 通过外部子模块 `external/ChuSQL-RustDriver` 接入，只存可重建索引。
 
 本轮按最新需求只实现后端，没有前端或在线文章管理。`PLAN.md` 保留原始规划，当前范围与后续安排见 [TODO.md](TODO.md)。
 
 ## 项目与运行
 
 ```text
-workspace/
-├── ChuBlog/           # 本项目
-│   └── crates/chusql-driver/ # 项目内的驱动副本
-└── ChuSQL/            # 现有数据库及已编译 Linux 产物
+ChuBlog/
+├── apps/api/
+├── external/
+│   ├── ChuSQL/             # Git 子模块，主仓库只记录版本指针
+│   └── ChuSQL-RustDriver/  # Git 子模块
+├── config/git-local.config
+└── scripts/init-deps.py
 ```
+
+先初始化外部依赖：
+
+```sh
+python3 scripts/init-deps.py
+```
+
+数据库地址为 `ChuGit:/srv/git/ChuSQL.git`，驱动为 `ChuGit:/srv/git/ChuSQL-RustDriver.git`。客户端需要配置 `ChuGit` SSH 别名。服务器上存在这两个本地仓库时，初始化脚本会优先使用项目级 `insteadOf` 将链接映射到 `file:///srv/git/…`，不经过 SSH。`config/git-local.config` 同时包含 SSH/GitHub 链接到本地仓库的映射，只在本项目启用，不修改全局配置。
+
+开发电脑可明确选择已有本地仓库（工作树或 bare 仓库），不会把依赖的未提交改动复制进来：
+
+```sh
+python3 scripts/init-deps.py --database-repo ../ChuSQL --driver-repo ../ChuSQLDriver
+```
+
+子模块固定到已提交版本；源仓库必须包含这些提交。依赖源码和构建产物不进入博客仓库，更新依赖时只提交 `.gitmodules`/配置及子模块指针。不要对主仓库使用 `git add --force` 重新收录依赖文件。
+
 
 开发检查：
 
@@ -25,7 +45,7 @@ cargo clippy --all-targets -- -D warnings
 
 ```sh
 # ChuSQL 尚未编译时，先按其项目说明构建 Rust 存储库、server 与 bootstrap。
-python3 scripts/prepare-deploy.py
+python3 scripts/prepare-deploy.py --build-database
 cp .env.example .env
 chmod 600 .env
 # 从标准输入输入管理员口令，Ctrl-D 结束；不要把明文写进命令行历史。
@@ -38,7 +58,7 @@ docker compose --env-file .env -f deploy/compose.yaml run --rm db-init
 
 构建时若 Debian 官方下载源较慢，可在 `.env` 配置 `DEBIAN_MIRROR=mirrors.ustc.edu.cn`，仍使用 Debian 签名校验。
 
-`prepare-deploy.py` 复制相邻 ChuSQL 的既有编译产物，不修改该项目；没有产物会明确失败。跨平台部署须先在目标 Debian/架构构建，不能复制 macOS、Windows 或其他架构二进制。镜像不含编译器、源码、`.env` 或密码文件。首次启动从环境中的哈希创建管理员，后续账号与权限以持久文件为准，修改初始哈希不会覆盖已有账户。
+`prepare-deploy.py` 默认从数据库子模块读取编译产物；`--build-database` 会先构建其 Rust 存储库、Haskell server 和 bootstrap。也可用 `--chusql-source /已有构建的/ChuSQL` 选择已有外部构建，没有产物会明确失败。编译产物只暂存在被忽略的 `deploy/bin/`。跨平台部署须先在目标 Debian/架构构建，不能复制 macOS、Windows 或其他架构二进制。镜像不含编译器、源码、`.env` 或密码文件。首次启动从环境中的哈希创建管理员，后续账号与权限以持久文件为准，修改初始哈希不会覆盖已有账户。
 
 Caddy 根据 `SITE_ADDRESS` 提供 HTTPS 和 API 反向代理；`PUBLIC_ORIGIN` 必须与外部站点完全一致，不带结尾斜杠。HTTP 仅对 localhost 开发场景允许。只需公网 TCP 80/443 和 Git SSH 2222（可改）；主机管理 SSH 另行管理，数据库和 API 不映射宿主端口。既有 UDP 7001 不受影响。参考 [Caddy 请求体限制](https://caddyserver.com/docs/caddyfile/directives/request_body) 与 [反向代理文档](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)。
 
@@ -48,7 +68,7 @@ Caddy 根据 `SITE_ADDRESS` 提供 HTTPS 和 API 反向代理；`PUBLIC_ORIGIN` 
 
 1. 注册：`POST /api/auth/register`，正文 `{ "username": "alice", "password": "至少12字节的口令" }`。默认角色 `reader`，绝不接受客户端指定角色。`ALLOW_REGISTRATION=false` 可关闭注册。
 2. 登录：`POST /api/auth/login`，相同字段。浏览器保存 HttpOnly Cookie；返回 `csrf`。所有修改请求必须携带站点 `Origin` 和 `X-CSRF-Token`。
-3. 本地生成 `ssh-keygen -t ed25519`；登录后 `PUT /api/account/ssh-key` 提交 `{ "public_key": "ssh-ed25519 AAAA..." }`，只交公钥。
+3. 本地生成 `ssh-keygen -t ed25519` 或 `ssh-keygen -t rsa -b 3072`；登录后 `PUT /api/account/ssh-key` 提交 `{ "public_key": "ssh-ed25519 AAAA..." }`，只交公钥。RSA 使用标准 `ssh-rsa AAAA...` 公钥文本，支持 2048–8192 位；实际认证使用 RSA/SHA-256 或 RSA/SHA-512，不启用旧的 SHA-1 签名。见 [OpenSSH 说明](https://www.openssh.com/txt/release-8.8)。
 4. 管理员登录后调用 `PATCH /api/admin/users/alice`，正文 `{ "enabled": true, "role": "publisher", "prefixes": ["alice-"] }`。不同有效发布者的前缀不能重叠。
 5. 此时 SSH 才接受该用户的密钥；`reader`、停用用户、未绑密钥的用户均不能访问 Git。管理员也需显式分配前缀和公钥才能发布。
 
@@ -99,7 +119,7 @@ MVP 每次只接受 **一个直接继承远端 main 的提交**，首次仅允�
 - Markdown 上限 256 KiB；图片单张 2 MiB、最多 12 张、尺寸 4096×4096；文章合计 6 MiB；快照原始文件合计 64 MiB、最多 1000 篇。
 - Git 输入 pack 上限 8 MiB；接收仓库达到 256 MiB 后拒绝新 SSH 会话，需要管理员离线维护。此阈值是应用检查，生产还应为 Docker 数据盘配置真实文件系统配额。
 - 使用成熟 Markdown 解析器，拒绝原始 HTML、危险链接协议、外链图片、控制符和双向隐藏字符；代码块是惰性文本，绝不执行 MDX、JS、仓库脚本、构建任务或上传内容。
-- 仅支持 Ed25519 公钥；拒绝把 `authorized_keys` 选项当作公钥上传。SSH 只接受精确的 `git-receive-pack 'content.git'` / `git-upload-pack 'content.git'`，没有 shell、SCP/SFTP、TTY、转发、隧道、用户环境变量。
+- 支持 Ed25519 和 2048–8192 位 RSA 公钥，拒绝弱密钥、负数/畸形 RSA 参数及额外二进制数据；拒绝把 `authorized_keys` 选项当作公钥上传。SSH 只接受精确的 `git-receive-pack 'content.git'` / `git-upload-pack 'content.git'`，没有 shell、SCP/SFTP、TTY、转发、隧道、用户环境变量。
 - 接收仓库由 UID 10002 管理；API 为独立 UID 10001，正式仓库/用户密码文件不挂载给 SSH 容器；SSH 只读授权文件和只读固定 hook。接收内容再次验证后才导入 API 自己的 Git 仓库。
 - HTTP 请求体 8 KiB；注册/登录合计全局 10 次/分钟，修改操作全局 60 次/分钟；密码哈希并发最多 2。1000 用户、1000 个有效会话上限，一小时固定会话期限。全局限制偏保守，后续可细化 IP/账户限制以改善公平性。
 - 统计不收集 IP/访客身份：公开文章数、标签数、Markdown 字节数、启动以来文章 API 请求数。请求数不是独立访客数，重启后清零。
@@ -119,8 +139,14 @@ MVP 每次只接受 **一个直接继承远端 main 的提交**，首次仅允�
 ## 联调
 
 ```sh
-python3 scripts/prepare-deploy.py
+python3 scripts/prepare-deploy.py --build-database
 python3 scripts/smoke.py
+python3 scripts/smoke.py --key-type rsa
 ```
 
 联调使用独立随机命名的 Compose 项目、本机 18080/18443/12222 端口，测试结束清理自己创建的容器与卷。覆盖真实 SSH 身份与授权、非法推送、发布撤回、ChuSQL 索引、断库阅读、重启与撤权。该测试会拉取基础镜像，需要 Docker 可用。
+
+
+## 历史清理后的协作
+
+驱动的旧源码副本会从主仓库历史中移除，后续只保留外部子模块配置。历史重写后，已有克隆建议重新克隆并初始化依赖；不要把旧 main 合并回来，否则可能重新引入已删除的依赖历史。自建服务器的不可达对象清理与其他人的旧克隆需要分别处理，GitHub 缓存和旧提交直链的回收由平台管理。

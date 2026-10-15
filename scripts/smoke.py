@@ -3,6 +3,7 @@
 Uses an isolated Compose project and removes only that project's containers/volumes.
 Run prepare-deploy.py first. Ports 18080, 18443, 12222 must be free.
 """
+import argparse
 import http.cookiejar
 import json
 import os
@@ -16,6 +17,9 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGIN = 'http://localhost:18080'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--key-type', choices=['ed25519', 'rsa'], default='ed25519')
+args = parser.parse_args()
 
 
 def run(args, **kwargs):
@@ -77,7 +81,7 @@ with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
         publisher = Client()
         publisher.call('POST', '/api/auth/register', {'username': 'alice', 'password': password})
         publisher.csrf = publisher.call('POST', '/api/auth/login', {'username': 'alice', 'password': password})['csrf']
-        run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(tmp / 'key')])
+        run(['ssh-keygen', '-q', '-t', args.key_type, '-b', '3072', '-N', '', '-f', str(tmp / 'key')])
         publisher.call('PUT', '/api/account/ssh-key', {'public_key': (tmp / 'key.pub').read_text().strip()})
         publisher.call('GET', '/api/admin/users', expected=403)
         env = os.environ.copy()

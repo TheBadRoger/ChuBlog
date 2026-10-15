@@ -10,10 +10,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use base64::{
-    Engine,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -428,23 +425,38 @@ pub async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResul
 }
 pub fn public_key(value: &str) -> Result<String> {
     ensure!(
-        value.len() < 512 && !value.contains(['\n', '\r']),
+        value.len() <= 4096 && !value.contains(['\n', '\r']),
         "公钥格式无效"
     );
-    let parts: Vec<_> = value.split_whitespace().collect();
-    ensure!(
-        parts.len() >= 2 && parts[0] == "ssh-ed25519",
-        "仅支持 Ed25519 公钥，禁止 authorized_keys 选项"
-    );
-    let bytes = STANDARD.decode(parts[1])?;
-    ensure!(
-        bytes.len() == 51
-            && bytes[..4] == [0, 0, 0, 11]
-            && &bytes[4..15] == b"ssh-ed25519"
-            && bytes[15..19] == [0, 0, 0, 32],
-        "Ed25519 公钥内容无效"
-    );
-    Ok(format!("ssh-ed25519 {}", STANDARD.encode(bytes)))
+    let key = ssh_key::PublicKey::from_openssh(value)
+        .context("SSH 公钥格式无效，禁止 authorized_keys 选项")?;
+    match key.key_data() {
+        ssh_key::public::KeyData::Ed25519(_) => {}
+        ssh_key::public::KeyData::Rsa(rsa) => {
+            let modulus = rsa.n.as_positive_bytes().context("RSA 模数必须为正数")?;
+            let first = modulus.first().context("RSA 模数为空")?;
+            let bits = modulus.len() * 8 - first.leading_zeros() as usize;
+            ensure!(
+                (2048..=8192).contains(&bits) && modulus.last().is_some_and(|b| b & 1 == 1),
+                "RSA 模数必须为 2048–8192 位正奇数"
+            );
+            let exponent = rsa.e.as_positive_bytes().context("RSA 指数必须为正数")?;
+            ensure!(exponent.len() <= 4, "RSA 指数过大");
+            let exponent = exponent.iter().fold(0_u32, |n, b| (n << 8) | u32::from(*b));
+            ensure!(
+                exponent >= 3 && exponent % 2 == 1,
+                "RSA 指数必须为至少 3 的奇数"
+            );
+        }
+        _ => anyhow::bail!("仅支持 Ed25519 或 RSA 公钥"),
+    }
+    // Drop comments and options: the stored value is exactly the parsed public key.
+    Ok(format!(
+        "{} {}",
+        key.algorithm().as_str(),
+        key.to_bytes()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))?
+    ))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

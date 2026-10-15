@@ -8,7 +8,8 @@ KbdInteractiveAuthentication no
 PermitEmptyPasswords no
 PubkeyAuthentication yes
 AuthenticationMethods publickey
-PubkeyAcceptedAlgorithms ssh-ed25519
+PubkeyAcceptedAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+RequiredRSASize 2048
 AllowUsers git
 AuthorizedKeysFile none
 AuthorizedKeysCommand /usr/local/bin/chublog-authorized-keys

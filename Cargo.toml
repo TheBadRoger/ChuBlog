@@ -1,3 +1,4 @@
 [workspace]
-members = ["apps/api", "crates/chusql-driver"]
+members = ["apps/api"]
+exclude = ["external/ChuSQL", "external/ChuSQL-RustDriver"]
 resolver = "3"

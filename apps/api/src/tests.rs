@@ -253,6 +253,58 @@ fn ssh_keys_cannot_inject_options_or_commands() {
     assert!(accounts::public_key(&format!("{key}\nssh-rsa AAA")).is_err());
     assert!(accounts::public_key("ssh-ed25519 AAAA").is_err());
 }
+fn rsa_key(bits: usize, exponent: &[u8]) -> String {
+    let mut modulus = vec![0xff; bits.div_ceil(8)];
+    modulus[0] >>= (8 - bits % 8) % 8;
+    if modulus[0] & 0x80 != 0 {
+        modulus.insert(0, 0);
+    }
+    let mut bytes = Vec::new();
+    for field in [b"ssh-rsa".as_slice(), exponent, modulus.as_slice()] {
+        bytes.extend((field.len() as u32).to_be_bytes());
+        bytes.extend(field);
+    }
+    format!(
+        "ssh-rsa {}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+#[test]
+fn rsa_keys_enforce_strength_encoding_and_safe_canonical_form() {
+    for bits in [2048, 3072, 4096, 8192] {
+        let key = rsa_key(bits, &[1, 0, 1]);
+        assert_eq!(
+            accounts::public_key(&format!("{key} user comment")).unwrap(),
+            key
+        );
+    }
+    for key in [
+        rsa_key(1024, &[1, 0, 1]),
+        rsa_key(2047, &[1, 0, 1]),
+        rsa_key(8193, &[1, 0, 1]),
+        rsa_key(2048, &[2]),
+        rsa_key(2048, &[1]),
+        rsa_key(2048, &[0x80]),
+        rsa_key(2048, &[1, 0, 0, 0, 1]),
+    ] {
+        assert!(accounts::public_key(&key).is_err());
+    }
+    let key = rsa_key(2048, &[1, 0, 1]);
+    assert!(accounts::public_key(&key.replace("ssh-rsa", "ssh-ed25519")).is_err());
+    assert!(accounts::public_key(&format!("command=\"sh\" {key}")).is_err());
+    let encoded = key.split_whitespace().nth(1).unwrap();
+    let mut bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .unwrap();
+    bytes.push(0);
+    assert!(
+        accounts::public_key(&format!(
+            "ssh-rsa {}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ))
+        .is_err()
+    );
+}
 async fn app(dir: &std::path::Path) -> Arc<App> {
     let config = dir.join("publishers.json");
     let hash = accounts::hash_password("Administrator-test-123".into())

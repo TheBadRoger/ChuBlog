@@ -13,7 +13,7 @@
 | POST | `/api/auth/login` | 公共 + Origin；`{username,password}`，返回 `{username,role,csrf}` 及 Cookie |
 | POST | `/api/auth/logout` | 登录 + Origin + CSRF；使会话失效并清除 Cookie |
 | GET | `/api/account` | 登录；返回自己的 `{username,permissions,csrf}`，不含口令哈希 |
-| PUT | `/api/account/ssh-key` | 登录 + Origin + CSRF；`{public_key}`，替换自己的唯一 Ed25519 公钥 |
+| PUT | `/api/account/ssh-key` | 登录 + Origin + CSRF；`{public_key}`，替换自己的唯一 Ed25519 或 RSA 公钥（RSA 2048–8192 位） |
 | PUT | `/api/account/password` | 登录 + Origin + CSRF；`{old_password,new_password}`，成功后全部会话失效 |
 | GET | `/api/admin/users` | 管理员；返回用户启用状态、角色、前缀及公钥，不含哈希 |
 | PATCH | `/api/admin/users/:username` | 管理员 + Origin + CSRF；`{enabled,role,prefixes}` |
