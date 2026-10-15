@@ -1,0 +1,25 @@
+{$SITE_ADDRESS:localhost} {
+    request_body {
+        max_size 8KB
+    }
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        -Server
+    }
+    handle /api/* {
+        reverse_proxy api:3001 {
+            transport http {
+                read_timeout 15s
+                write_timeout 15s
+            }
+        }
+    }
+    handle {
+        respond "ChuBlog backend is running. Frontend is planned separately." 200
+    }
+    log {
+        output stdout
+        format json
+    }
+}
