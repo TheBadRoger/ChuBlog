@@ -46,6 +46,39 @@ class InitializeDependencies(unittest.TestCase):
             for name in ['ChuSQL', 'ChuSQL-RustDriver']:
                 self.assertEqual((project / f'external/{name}/source.txt').read_text(), f'{name} committed source')
             self.assertTrue(all(line.startswith('160000') for line in git(project, 'ls-files', '--stage', 'external').splitlines()))
+            # A fresh clone must fall back when localhost SSH fails. Redirect only the test's
+            # GitHub remotes to local fixtures, so this verifies fallback without network access.
+            fresh = root / 'fresh'
+            git(project, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'Pinned dependencies')
+            git(root, 'clone', '--no-local', str(project), str(fresh))
+            (fresh / 'scripts').mkdir()
+            shutil.copy2(SCRIPT, fresh / 'scripts/init-deps.py')
+            fallback_env = {**env, 'GIT_ALLOW_PROTOCOL': 'file', 'GIT_CONFIG_COUNT': '2'}
+            for i, (name, source) in enumerate(zip(['ChuSQL', 'ChuSQL-RustDriver'], sources)):
+                fallback_env[f'GIT_CONFIG_KEY_{i}'] = f'url.{Path(source).as_uri()}.insteadOf'
+                fallback_env[f'GIT_CONFIG_VALUE_{i}'] = f'git@github.com:TheBadRoger/{name}.git'
+            subprocess.run(['python3', 'scripts/init-deps.py'], cwd=fresh, env=fallback_env, check=True, capture_output=True)
+            for name in ['ChuSQL', 'ChuSQL-RustDriver']:
+                self.assertEqual((fresh / f'external/{name}/source.txt').read_text(), f'{name} committed source')
+                self.assertEqual(git(fresh / f'external/{name}', 'config', '--get', 'remote.origin.url'), f'git@github.com:TheBadRoger/{name}.git')
+            # Also cover an accessible but empty localhost bare repository: the initial
+            # submodule clone succeeds, fetching the pinned commit fails, then GitHub recovers.
+            empty = root / 'empty.git'
+            git(root, 'init', '--bare', str(empty))
+            partial = root / 'partial'
+            git(root, 'clone', '--no-local', str(project), str(partial))
+            (partial / 'scripts').mkdir()
+            shutil.copy2(SCRIPT, partial / 'scripts/init-deps.py')
+            partial_env = {**fallback_env, 'GIT_CONFIG_COUNT': '4'}
+            for i, name in enumerate(['ChuSQL', 'ChuSQL-RustDriver'], start=2):
+                empty_source = root / f'empty-{name}.git'
+                git(root, 'clone', '--bare', str(empty), str(empty_source))
+                partial_env[f'GIT_CONFIG_KEY_{i}'] = f'url.{empty_source.as_uri()}.insteadOf'
+                partial_env[f'GIT_CONFIG_VALUE_{i}'] = f'ssh://git@localhost/srv/git/{name}.git'
+            result = subprocess.run(['python3', 'scripts/init-deps.py'], cwd=partial, env=partial_env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for name in ['ChuSQL', 'ChuSQL-RustDriver']:
+                self.assertEqual((partial / f'external/{name}/source.txt').read_text(), f'{name} committed source')
             # Running the initialization a second time must preserve the same pins.
             subprocess.run(['python3', 'scripts/init-deps.py', '--database-repo', sources[0], '--driver-repo', sources[1]], cwd=project, env=env, check=True, capture_output=True)
 

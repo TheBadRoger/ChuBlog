@@ -22,9 +22,14 @@ ChuBlog/
 python3 scripts/init-deps.py
 ```
 
-数据库地址为 `ChuGit:/srv/git/ChuSQL.git`，驱动为 `ChuGit:/srv/git/ChuSQL-RustDriver.git`。客户端需要配置 `ChuGit` SSH 别名。服务器上存在这两个本地仓库时，初始化脚本会优先使用项目级 `insteadOf` 将链接映射到 `file:///srv/git/…`，不经过 SSH。`config/git-local.config` 同时包含 SSH/GitHub 链接到本地仓库的映射，只在本项目启用，不修改全局配置。
+子模块登记地址为 `ChuGit:/srv/git/ChuSQL.git` 和 `ChuGit:/srv/git/ChuSQL-RustDriver.git`。初始化脚本按以下顺序获取**固定提交**：
 
-开发电脑可明确选择已有本地仓库（工作树或 bare 仓库），不会把依赖的未提交改动复制进来：
+1. 本机 SSH：`ssh://git@localhost/srv/git/ChuSQL.git`、`ssh://git@localhost/srv/git/ChuSQL-RustDriver.git`。
+2. 本机连接、访问或获取固定提交失败，回退到 `git@github.com:TheBadRoger/ChuSQL.git`、`git@github.com:TheBadRoger/ChuSQL-RustDriver.git`。
+
+已正确初始化的固定版本直接复用；有未提交修改时拒绝覆盖。不会因回退而改为任意最新分支。`config/git-local.config` 提供 `ChuGit`/自建服务器地址到 localhost SSH 的可选 `insteadOf` 映射；刻意不改写 GitHub 地址，以免回退又被映射回本机。脚本不启用全局 `file` 协议，也不递归初始化未知子模块。
+
+开发电脑仍可显式选择已有本地来源（仅开发覆盖参数，不是服务器默认流程）；只读取已提交版本：
 
 ```sh
 python3 scripts/init-deps.py --database-repo ../ChuSQL --driver-repo ../ChuSQLDriver
@@ -41,7 +46,25 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-部署基于 Debian 13，同架构构建 API 和 ChuSQL 后，组装运行镜像：
+部署基于 Debian 13。项目和依赖工作目录应归 `deploy` 用户所有；为该用户配置可访问 `git@localhost` 与 GitHub 的 SSH 密钥，并预先核对两端主机密钥。私钥留在主机，不能放进镜像。
+
+推荐入口（以 root 调 Docker，Git 与编译均以 deploy 运行）：
+
+```sh
+sudo /srv/apps/ChuBlog/scripts/deploy.sh
+```
+
+脚本先以 `sudo -H -u deploy` 运行 `init-deps.py`，再构建外部项目与 Docker 镜像。默认依赖工作树位于 `/srv/apps/ChuBlog/external/`。其数据库拉取等价于你指定的方式：
+
+```sh
+sudo -u deploy git clone ssh://git@localhost/srv/git/ChuSQL.git /srv/apps/chusql
+# 本机来源失败时：
+sudo -u deploy git clone git@github.com:TheBadRoger/ChuSQL.git /srv/apps/chusql
+```
+
+如选择这个独立数据库目录，可用 `prepare-deploy.py --chusql-source /srv/apps/chusql --build-database` 构建；默认部署入口使用子模块固定版本。不要将数据库单独目录的源代码或产物加入博客提交。
+
+首次部署先准备 `.env`，再运行入口。也可以手动执行以下同架构构建步骤；远程服务器上的 Git/编译命令应以 `deploy` 身份执行，Docker 命令由 root 执行：
 
 ```sh
 # ChuSQL 尚未编译时，先按其项目说明构建 Rust 存储库、server 与 bootstrap。
@@ -55,6 +78,8 @@ docker compose --env-file .env -f deploy/compose.yaml up -d --build
 # db 启动就绪后，创建 chublog 库和非超级用户 chublog_index；失败时检查日志后重试。
 docker compose --env-file .env -f deploy/compose.yaml run --rm db-init
 ```
+
+部署入口启动服务后，首次仍需执行上面的 `db-init` 命令；入口不会在数据库启动竞态中静默吞掉初始化错误。
 
 构建时若 Debian 官方下载源较慢，可在 `.env` 配置 `DEBIAN_MIRROR=mirrors.ustc.edu.cn`，仍使用 Debian 签名校验。
 
@@ -149,4 +174,4 @@ python3 scripts/smoke.py --key-type rsa
 
 ## 历史清理后的协作
 
-驱动的旧源码副本会从主仓库历史中移除，后续只保留外部子模块配置。历史重写后，已有克隆建议重新克隆并初始化依赖；不要把旧 main 合并回来，否则可能重新引入已删除的依赖历史。自建服务器的不可达对象清理与其他人的旧克隆需要分别处理，GitHub 缓存和旧提交直链的回收由平台管理。
+驱动的旧源码副本已从主仓库可达历史移除，后续只保留外部子模块配置。历史重写后，已有克隆建议重新克隆并初始化依赖；不要把旧 main 合并回来，否则可能重新引入已删除的依赖历史。自建服务器的不可达对象清理与其他人的旧克隆需要分别处理，GitHub 缓存和旧提交直链的回收由平台管理。
