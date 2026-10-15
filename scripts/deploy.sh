@@ -1,5 +1,5 @@
 #!/bin/sh
-# Prepare configured external dependencies, then build and start Docker Compose.
+# Initialize dependencies via GitHub HTTPS with self-hosted HTTPS fallback, then build Docker Compose.
 set -eu
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 python3 "$PROJECT_ROOT/scripts/init-deps.py"

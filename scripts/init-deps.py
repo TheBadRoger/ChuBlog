@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Initialize pinned dependencies over GitHub HTTPS; optionally prefer authorized SSH."""
+"""Initialize pinned dependencies over GitHub HTTPS with a self-hosted HTTPS fallback."""
 import argparse
 import os
 from pathlib import Path
@@ -14,7 +14,7 @@ def git(*args, **kwargs):
     return subprocess.run(['git', *args], cwd=ROOT, **kwargs)
 
 
-def initialize(name, override, prefer_ssh=False):
+def initialize(name, override):
     path = f'external/{name}'
     checkout = ROOT / path
     pin = git('ls-files', '--stage', '--', path, text=True, capture_output=True, check=True).stdout.split()
@@ -34,13 +34,9 @@ def initialize(name, override, prefer_ssh=False):
             raise RuntimeError(f'Local repository does not exist: {source}')
         sources = [source.as_uri()]
     else:
-        sources = [f'https://github.com/TheBadRoger/{name}.git']
-        if prefer_ssh:
-            sources.insert(0, f'ChuGit:/srv/git/{name}.git')
+        sources = [f'https://github.com/TheBadRoger/{name}.git',
+                   f'https://repo.chunana.cn/ChuNa7a/{name}.git']
     transport_env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0'}
-    configured_ssh = git('config', '--get', 'core.sshCommand', capture_output=True, check=False)
-    if configured_ssh.returncode != 0 and not any(name in transport_env for name in ['GIT_SSH', 'GIT_SSH_COMMAND']):
-        transport_env['GIT_SSH_COMMAND'] = 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1'
     for url in sources:
         print(f'{name}: trying {url}', flush=True)
         git('config', '--local', f'submodule.{path}.url', url, check=True)
@@ -63,10 +59,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--database-repo', type=Path, help='explicit local development source for ChuSQL')
     parser.add_argument('--driver-repo', type=Path, help='explicit local development source for the driver')
-    parser.add_argument('--prefer-ssh', action='store_true', help='authorized devices: try ChuGit SSH first, then GitHub HTTPS')
     args = parser.parse_args()
     for name, override in zip(PROJECTS, [args.database_repo, args.driver_repo]):
-        initialize(name, override, args.prefer_ssh)
+        initialize(name, override)
 
 
 if __name__ == '__main__':

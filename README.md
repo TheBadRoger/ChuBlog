@@ -15,24 +15,23 @@ ChuBlog/
 └── scripts/init-deps.py
 ```
 
-先初始化外部依赖：
+项目提供两个 HTTPS 仓库，任选其一克隆：
 
 ```sh
+git clone https://github.com/TheBadRoger/ChuBlog.git
+# 或：git clone https://repo.chunana.cn/ChuNa7a/ChuBlog.git
+cd ChuBlog
 python3 scripts/init-deps.py
 ```
 
-默认依赖地址为 GitHub HTTPS，无需服务器 SSH 公钥或 `ChuGit` 别名：
+数据库和驱动均提供两个 HTTPS 源：
 
-- `https://github.com/TheBadRoger/ChuSQL.git`
-- `https://github.com/TheBadRoger/ChuSQL-RustDriver.git`
+| 依赖 | GitHub | 自建仓库 |
+| --- | --- | --- |
+| ChuSQL | https://github.com/TheBadRoger/ChuSQL.git | https://repo.chunana.cn/ChuNa7a/ChuSQL.git |
+| ChuSQL-RustDriver | https://github.com/TheBadRoger/ChuSQL-RustDriver.git | https://repo.chunana.cn/ChuNa7a/ChuSQL-RustDriver.git |
 
-已授权设备可显式优先使用自建服务器；SSH 连接、访问或固定提交获取失败时，自动回退到上面的 GitHub HTTPS 地址：
-
-```sh
-python3 scripts/init-deps.py --prefer-ssh
-```
-
-该选项先尝试 `ChuGit:/srv/git/ChuSQL.git` 和 `ChuGit:/srv/git/ChuSQL-RustDriver.git`，需要设备已配置对应 SSH 身份。已正确初始化的固定版本直接复用，有未提交修改时拒绝覆盖；回退不改为任意最新分支。服务器已有的 Git 地址覆盖由服务器自行管理，项目不设置全局 `insteadOf`、localhost 映射、OS 用户或服务器 SSH 配置。
+初始化先尝试 GitHub HTTPS，连接、访问或固定提交获取失败时回退自建 HTTPS，无需 SSH 身份。已正确初始化的固定版本直接复用，有未提交修改时拒绝覆盖；回退不改为任意最新分支。项目不设置全局 `insteadOf`、localhost 映射、OS 用户或服务器 SSH 配置。
 
 开发电脑仍可显式选择已有本地来源（仅开发覆盖参数，不是服务器默认流程）；只读取已提交版本：
 
@@ -51,7 +50,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-部署基于 Debian 13。`scripts/deploy.sh` 会使用同一个依赖初始化脚本，再构建外部数据库与 Docker 镜像；沿用运行者现有的 Git 配置，不在项目内覆盖服务器环境。
+部署基于 Debian 13。`scripts/deploy.sh` 会使用同一个依赖初始化脚本，自动在上述两个 HTTPS 源之间回退，再构建外部数据库与 Docker 镜像；沿用运行者现有的 Git 配置，不在项目内覆盖服务器环境。
 
 ```sh
 scripts/deploy.sh
