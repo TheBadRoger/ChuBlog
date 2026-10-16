@@ -315,6 +315,7 @@ pub async fn import_authors(
                 candidate.posts.retain(|_, post| post.author != *identity);
                 for (id, mut post) in snapshot.posts {
                     post.author = identity.clone();
+                    post.meta.author = identity.clone();
                     // Neither username nor local ID allows '~', so this is collision-free.
                     let key = format!("{identity}~{id}");
                     post.meta.slug = key.clone();
@@ -327,7 +328,7 @@ pub async fn import_authors(
                     .posts
                     .values()
                     .map(|p| {
-                        p.markdown.len()
+                        p.pages.values().map(String::len).sum::<usize>()
                             + p.assets.iter().map(|a| a.data.len() * 3 / 4).sum::<usize>()
                     })
                     .sum();

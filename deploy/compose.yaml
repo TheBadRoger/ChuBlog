@@ -6,7 +6,7 @@ x-logging: &logging
     max-file: "3"
 services:
   init:
-    build: { context: ., target: init, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    build: { context: ., target: init, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}", DEBIAN_IMAGE: "${REGISTRY_PREFIX:-}debian:trixie-slim" } }
     volumes:
       - content:/data
       - authorization:/auth
@@ -17,7 +17,7 @@ services:
     network_mode: none
     logging: *logging
   api:
-    build: { context: ., target: api, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    build: { context: ., target: api, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}", DEBIAN_IMAGE: "${REGISTRY_PREFIX:-}debian:trixie-slim" } }
     depends_on:
       init: { condition: service_completed_successfully }
     environment:
@@ -48,8 +48,32 @@ services:
       timeout: 3s
       retries: 3
     logging: *logging
+  web:
+    build: { context: ../apps/web, args: { NODE_IMAGE: "${REGISTRY_PREFIX:-}node:24-bookworm-slim" } }
+    depends_on:
+      api: { condition: service_healthy }
+    environment:
+      API_BASE_URL: http://api:3001
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN}
+      SITE_TITLE: ${SITE_TITLE:-ChuBlog}
+      SSH_PORT: ${SSH_PORT:-2222}
+    read_only: true
+    tmpfs: ["/tmp:size=16m,noexec,nosuid"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.0
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4321/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging: *logging
   ssh:
-    build: { context: ., target: ssh, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    build: { context: ., target: ssh, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}", DEBIAN_IMAGE: "${REGISTRY_PREFIX:-}debian:trixie-slim" } }
     depends_on:
       init: { condition: service_completed_successfully }
       api: { condition: service_healthy }
@@ -72,7 +96,7 @@ services:
     restart: unless-stopped
     logging: *logging
   db:
-    build: { context: ., target: database, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    build: { context: ., target: database, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}", DEBIAN_IMAGE: "${REGISTRY_PREFIX:-}debian:trixie-slim" } }
     depends_on:
       init: { condition: service_completed_successfully }
     environment:
@@ -91,7 +115,7 @@ services:
     restart: unless-stopped
     logging: *logging
   db-init:
-    build: { context: ., target: api, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}" } }
+    build: { context: ., target: api, args: { DEBIAN_MIRROR: "${DEBIAN_MIRROR:-deb.debian.org}", DEBIAN_IMAGE: "${REGISTRY_PREFIX:-}debian:trixie-slim" } }
     profiles: [setup]
     entrypoint: [chublog-api, provision-db]
     environment:
@@ -106,7 +130,7 @@ services:
     restart: "no"
     logging: *logging
   caddy:
-    image: caddy:2
+    image: ${REGISTRY_PREFIX:-}caddy:2
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
     ports: ["${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80", "${HTTP_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"]
@@ -120,6 +144,7 @@ services:
     networks: [backend, edge]
     depends_on:
       api: { condition: service_healthy }
+      web: { condition: service_healthy }
     restart: unless-stopped
     logging: *logging
 networks:

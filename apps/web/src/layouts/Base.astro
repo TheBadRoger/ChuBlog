@@ -1,0 +1,32 @@
+---
+import '../styles/global.css';
+interface Props { title?: string; description?: string; home?: boolean }
+const { title, description = '文章与随笔。', home = false } = Astro.props;
+const site = process.env.SITE_TITLE || 'ChuBlog';
+const path = Astro.url.pathname;
+---
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title ? `${title} · ${site}` : site}</title>
+  </head>
+  <body class:list={{ 'home-page': home }}>
+    <a class="skip-link" href="#main">跳到正文</a>
+    <header class="site-header">
+      <a class="wordmark" href="/" aria-label={`${site} 首页`}>{site}</a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="/" aria-current={path === '/' ? 'page' : undefined}>首页</a>
+        <a href="/articles" aria-current={path.startsWith('/articles') || path.startsWith('/posts/') ? 'page' : undefined}>文章</a>
+        <a href="/login" data-account-link aria-current={path === '/account' || path === '/login' ? 'page' : undefined}>登录</a>
+      </nav>
+    </header>
+    <main id="main" tabindex="-1"><slot /></main>
+    <footer class="site-footer"><span>{site}</span><span>© {new Date().getFullYear()}</span></footer>
+    <script>import '../scripts/client';</script>
+  </body>
+</html>

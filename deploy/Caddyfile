@@ -16,7 +16,12 @@
         }
     }
     handle {
-        respond "ChuBlog backend is running. Frontend is planned separately." 200
+        reverse_proxy web:4321 {
+            transport http {
+                read_timeout 15s
+                write_timeout 15s
+            }
+        }
     }
     log {
         output stdout

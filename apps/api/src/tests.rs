@@ -4,10 +4,45 @@ use axum::http::Request;
 use std::collections::BTreeMap;
 use tower::ServiceExt;
 
-fn markdown(key: &str, status: &str, body: &str) -> String {
+fn manifest(id: &str, folder: &str, public: bool) -> String {
     format!(
-        "---\ntitle: Test\nslug: {key}\ndate: '2026-10-15'\nupdated: '2026-10-15'\nstatus: {status}\ntags: [Rust]\ndescription: Test article\n---\n\n{body}\n"
+        "[[articles]]\nid = {id:?}\nfolder = {folder:?}\ntitle = \"Test\"\ndescription = \"Test article\"\ntags = [\"Rust\"]\npublic = {public}\n"
     )
+}
+fn ready(outcome: content::Scan) -> Snapshot {
+    match outcome {
+        content::Scan::Ready(snapshot) => snapshot,
+        content::Scan::Pending(reason) => panic!("unexpected staged index: {reason}"),
+    }
+}
+fn test_post(id: &str, public: bool, body: &str) -> content::Post {
+    content::Post {
+        meta: content::Metadata {
+            title: "Test".into(),
+            author: "alice".into(),
+            slug: id.into(),
+            date: "2026-10-16T00:00:00Z".into(),
+            updated: "2026-10-16T00:00:00Z".into(),
+            created_at: "2026-10-16T00:00:00Z".into(),
+            status: if public {
+                Status::Published
+            } else {
+                Status::Draft
+            },
+            tags: vec!["Rust".into()],
+            description: "Test article".into(),
+            cover: None,
+        },
+        markdown: body.into(),
+        pages: BTreeMap::from([("main.md".into(), body.into())]),
+        entry: "main.md".into(),
+        assets: vec![],
+        author: "alice".into(),
+        article_id: id.into(),
+        path: "posts/first/main.md".into(),
+        git_commit: "test".into(),
+        format: "markdown".into(),
+    }
 }
 async fn commit(
     repo: &std::path::Path,
@@ -61,7 +96,7 @@ async fn commit_bytes(
         .into()
 }
 #[test]
-fn rejects_active_content_and_unsafe_metadata_but_keeps_inert_code() {
+fn rejects_active_content_and_unsafe_links_but_keeps_inert_code() {
     for body in [
         "<script>alert(1)</script>",
         "<img src=x onerror=alert(1)>",
@@ -72,104 +107,127 @@ fn rejects_active_content_and_unsafe_metadata_but_keeps_inert_code() {
         "a\u{202e}exe",
         "[x](//evil.test)",
         "[x](file:///etc/passwd)",
+        "[x](../other/main.md)",
+        "[x](%2e%2e%2fsecret.md)",
+        "[x](a.md?script=1)",
     ] {
         assert!(
-            content::parse(markdown("alice-test", "published", body), vec![]).is_err(),
+            content::validate_markdown(body, &[]).is_err(),
             "accepted {body}"
         );
     }
-    assert!(content::parse(markdown("../escape", "published", "Hello"), vec![]).is_err());
-    assert!(
-        content::parse(
-            markdown(
-                "alice-test",
-                "published",
-                &"x".repeat(content::MAX_MARKDOWN)
-            ),
-            vec![]
-        )
-        .is_err()
-    );
-    assert!(
-        content::parse(
-            markdown(
-                "alice-test",
-                "published",
-                "```html\n<script>alert(1)</script>\n```\n[valid](https://example.com)"
-            ),
-            vec![]
-        )
-        .is_ok()
-    );
-    assert!(
-        content::decode_asset(&content::Asset {
-            name: "hidden.svg".into(),
-            data: "PHN2Zz4=".into()
-        })
-        .is_err()
-    );
-    assert!(
-        content::decode_asset(&content::Asset {
-            name: "fake.png".into(),
-            data: "PHNjcmlwdD4=".into()
-        })
-        .is_err()
-    );
+    for body in [
+        "[next](next.md#chapter)",
+        "[next](./next.markdown)",
+        "```html\n<script>alert(1)</script>\n```\n[valid](https://example.com)",
+    ] {
+        assert!(content::validate_markdown(body, &[]).is_ok());
+    }
+    for (name, data) in [("hidden.svg", "PHN2Zz4="), ("fake.png", "PHNjcmlwdD4=")] {
+        assert!(
+            content::decode_asset(&content::Asset {
+                name: name.into(),
+                data: data.into()
+            })
+            .is_err()
+        );
+    }
 }
 #[test]
-fn manifest_requires_unique_ids_safe_folders_and_bounded_text() {
-    let index =
-        content::manifest("first posts/writing article.md\nsecond posts/notes body.markdown\n")
-            .unwrap();
-    assert_eq!(index["first"].folder, "posts/writing");
-    assert_eq!(index["first"].file, "article.md");
-    for text in [
-        "first posts/a a.md\nfirst posts/b b.md",
-        "first posts/a a.md\nsecond posts/a b.md",
-        "first ../escape",
-        "first posts/../escape",
-        "first posts/.git",
-        "first posts/a ../a.md",
-        "first posts/a .gitignore",
-        "first posts/a a.pem",
-        "../escape posts/a",
-        "first posts/a\0",
-        "-----BEGIN CERTIFICATE-----",
-        "first posts/a\u{202e}",
+fn toml_manifest_limits_author_fields_and_defaults_entry_to_main() {
+    let text = manifest("first", "posts/writing", true);
+    let index = content::manifest(&text).unwrap();
+    assert_eq!(index[0].id, "first");
+    assert_eq!(index[0].entry, "main.md");
+    for input in [
+        format!("{text}author = \"master\""),
+        format!("{text}date = \"2000-01-01\""),
+        format!("{text}updated = \"2000-01-01\""),
+        format!("{text}entry = \"../secret.md\""),
+        format!("{text}entry = \".gitignore\""),
+        format!("{text}entry = \"cert.pem\""),
+        format!("{text}{}", manifest("first", "posts/second", true)),
+        format!("{text}{}", manifest("second", "posts/writing", true)),
+        manifest("../escape", "posts/a", true),
+        manifest("first", "posts/../escape", true),
+        "".into(),
+        "[[articles".into(),
+        "articles = 1".into(),
+        " ".repeat(65537),
     ] {
-        assert!(content::manifest(text).is_err(), "accepted {text}");
+        assert!(content::manifest(&input).is_err(), "accepted {input}");
     }
-    assert!(content::manifest(&" ".repeat(65537)).is_err());
     assert!(ssh::author_repository(std::path::Path::new("/private"), "../bob").is_err());
 }
 
 #[tokio::test]
-async fn git_manifest_controls_publication_and_validates_unlisted_files_and_history() {
+async fn git_stages_invalid_index_but_rejects_unsafe_files_and_history() {
     let dir = tempfile::tempdir().unwrap();
     let repo = content::init(dir.path()).await.unwrap();
     let zero = "0000000000000000000000000000000000000000";
-    let body = markdown("first", "published", "Hello");
+    let index = manifest("first", "posts/writing", true);
     let files = [
-        ("index.txt", "100644", "first posts/writing index.md\n"),
-        ("posts/writing/index.md", "100644", body.as_str()),
+        ("index.toml", "100644", index.as_str()),
+        ("posts/writing/main.md", "100644", "Hello"),
     ];
     let first = commit(&repo, None, &files).await;
-    let snapshot = ssh::validate_change(&repo, zero, &first).await.unwrap();
-    assert_eq!(snapshot.posts["first"].path, "posts/writing/index.md");
+    let snapshot = ready(ssh::validate_change(&repo, zero, &first).await.unwrap());
+    assert_eq!(snapshot.posts["first"].path, "posts/writing/main.md");
     let removed = commit(
         &repo,
         Some(&first),
-        &[("index.txt", "100644", ""), files[1]],
+        &[("index.toml", "100644", "articles = []"), files[1]],
     )
     .await;
     assert!(
-        ssh::validate_change(&repo, &first, &removed)
-            .await
-            .unwrap()
+        ready(ssh::validate_change(&repo, &first, &removed).await.unwrap())
             .posts
             .is_empty()
     );
-    // Unlisted content is inert but must never bypass the allowlist or validation.
+    let missing = commit(&repo, Some(&first), &[files[0]]).await;
+    assert!(
+        ready(content::scan_at(&repo, &missing).await.unwrap())
+            .posts
+            .is_empty()
+    );
+    for bad_index in ["[[articles", "articles = 1"] {
+        let candidate = commit(
+            &repo,
+            Some(&first),
+            &[("index.toml", "100644", bad_index), files[1]],
+        )
+        .await;
+        assert!(matches!(
+            ssh::validate_change(&repo, &first, &candidate)
+                .await
+                .unwrap(),
+            content::Scan::Pending(_)
+        ));
+    }
+    let malicious_staged = commit(
+        &repo,
+        Some(&first),
+        &[
+            ("index.toml", "100644", "[[articles"),
+            (
+                "posts/writing/main.md",
+                "100644",
+                "<script>alert(1)</script>",
+            ),
+        ],
+    )
+    .await;
+    assert!(
+        ssh::validate_change(&repo, &first, &malicious_staged)
+            .await
+            .is_err(),
+        "broken TOML must not bypass content security checks"
+    );
+    let no_index = commit(&repo, Some(&first), &[files[1]]).await;
+    assert!(matches!(
+        content::scan_at(&repo, &no_index).await.unwrap(),
+        content::Scan::Pending(_)
+    ));
     for (path, mode, value) in [
         (".gitignore", "100644", "secret"),
         ("posts/writing/cert.pem", "100644", "cert"),
@@ -179,13 +237,13 @@ async fn git_manifest_controls_publication_and_validates_unlisted_files_and_hist
             "-----BEGIN PRIVATE KEY-----",
         ),
         (
-            "posts/writing/hidden.md",
+            "posts/unlisted/hidden.md",
             "100644",
             "<script>alert(1)</script>",
         ),
         ("posts/writing/fake.png", "100644", "not an image"),
-        ("posts/other/index.md", "120000", "/etc/passwd"),
-        ("posts/other/index.md", "100755", "executable"),
+        ("posts/other/main.md", "120000", "/etc/passwd"),
+        ("posts/other/main.md", "100755", "executable"),
         ("posts/writing/payload.bin", "100644", "binary"),
     ] {
         let candidate = commit(
@@ -201,74 +259,31 @@ async fn git_manifest_controls_publication_and_validates_unlisted_files_and_hist
             "accepted {path}"
         );
     }
-    let missing = commit(
+    let oversize = "x".repeat(content::MAX_MARKDOWN + 1);
+    let candidate = commit(
         &repo,
         Some(&first),
-        &[("index.txt", "100644", "first posts/missing index.md")],
+        &[files[0], ("posts/writing/main.md", "100644", &oversize)],
     )
     .await;
-    assert!(content::scan_at(&repo, &missing).await.is_err());
-    let duplicate_body = commit(
-        &repo,
-        Some(&first),
-        &[
-            files[0],
-            files[1],
-            ("posts/writing/index.txt", "100644", body.as_str()),
-        ],
-    )
-    .await;
-    assert_eq!(
-        content::scan_at(&repo, &duplicate_body)
+    assert!(
+        ssh::validate_change(&repo, &first, &candidate)
             .await
-            .unwrap()
-            .posts["first"]
-            .path,
-        "posts/writing/index.md"
+            .is_err()
     );
     let skipped = commit(&repo, Some(&removed), &files).await;
     assert!(ssh::validate_change(&repo, &first, &skipped).await.is_err());
     assert!(ssh::validate_change(&repo, &first, zero).await.is_err());
-    let plain = commit(
-        &repo,
-        Some(&first),
-        &[
-            ("index.txt", "100644", "first posts/writing index.txt"),
-            ("posts/writing/index.txt", "100644", body.as_str()),
-        ],
-    )
-    .await;
-    assert_eq!(
-        content::scan_at(&repo, &plain).await.unwrap().posts["first"].format,
-        "text"
-    );
-    let draft_body = markdown("first", "draft", "Secret");
-    let draft = commit(
-        &repo,
-        Some(&first),
-        &[
-            ("index.txt", "100644", "first posts/writing index.markdown"),
-            ("posts/writing/index.markdown", "100644", &draft_body),
-        ],
-    )
-    .await;
-    content::persist(dir.path(), &content::scan_at(&repo, &draft).await.unwrap())
-        .await
-        .unwrap();
-    let public: Snapshot = serde_json::from_slice(
-        &tokio::fs::read(dir.path().join("published.json"))
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(public.posts.is_empty());
 }
 
 #[tokio::test]
-async fn custom_body_selection_ignores_unindexed_text_and_unreferenced_images() {
+async fn multi_page_graph_and_cover_exclude_unlinked_documents_and_assets() {
     let dir = tempfile::tempdir().unwrap();
     let repo = content::init(dir.path()).await.unwrap();
-    let body = markdown("first", "published", "![cover](cover.png)").replace("slug: first\n", "");
+    let index = format!(
+        "{}entry = \"article.markdown\"\ncover = \"cover.png\"\n",
+        manifest("first", "posts/writing", true)
+    );
     let mut image = std::io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(1, 1)
         .write_to(&mut image, image::ImageFormat::Png)
@@ -277,60 +292,93 @@ async fn custom_body_selection_ignores_unindexed_text_and_unreferenced_images() 
         &repo,
         None,
         &[
+            ("index.toml", "100644", index.as_bytes()),
             (
-                "index.txt",
+                "posts/writing/article.markdown",
                 "100644",
-                b"first posts/writing article.markdown\n",
+                b"[Next](chapter.md#part)",
             ),
-            ("posts/writing/article.markdown", "100644", body.as_bytes()),
+            (
+                "posts/writing/chapter.md",
+                "100644",
+                b"[Back](./article.markdown)\n![x](figure.png)",
+            ),
             ("posts/writing/notes.txt", "100644", b"Unselected notes"),
             ("posts/unlisted/draft.txt", "100644", b"Not registered"),
             ("posts/writing/cover.png", "100644", image.get_ref()),
+            ("posts/writing/figure.png", "100644", image.get_ref()),
             ("posts/writing/private.png", "100644", image.get_ref()),
         ],
     )
     .await;
-    let snapshot = content::scan_at(&repo, &commit).await.unwrap();
+    let snapshot = ready(content::scan_at(&repo, &commit).await.unwrap());
     assert_eq!(snapshot.posts.len(), 1);
     let post = &snapshot.posts["first"];
     assert_eq!(post.path, "posts/writing/article.markdown");
-    assert_eq!(post.meta.slug, "first");
-    assert_eq!(post.assets.len(), 1);
-    assert_eq!(post.assets[0].name, "cover.png");
+    assert_eq!(post.pages.len(), 2);
+    assert_eq!(post.assets.len(), 2);
+    assert!(!post.assets.iter().any(|a| a.name == "private.png"));
     assert!(
         !serde_json::to_string(&snapshot)
             .unwrap()
             .contains("Unselected notes")
     );
+    let mut draft = snapshot.clone();
+    draft.posts.get_mut("first").unwrap().meta.status = Status::Draft;
+    content::persist(dir.path(), &draft).await.unwrap();
+    let public: Snapshot =
+        serde_json::from_slice(&std::fs::read(dir.path().join("published.json")).unwrap()).unwrap();
+    assert!(public.posts.is_empty());
+}
+
+#[test]
+fn timestamps_are_server_assigned_and_only_change_with_article_content() {
+    let mut post = test_post("first", false, "Hello");
+    post.meta.date.clear();
+    post.meta.created_at.clear();
+    post.meta.updated.clear();
+    content::stamp(&mut post, None, "2026-10-16T00:00:00Z");
+    assert_eq!(post.meta.date, "");
+    let initial = post.clone();
+    post.meta.status = Status::Published;
+    content::stamp(&mut post, Some(&initial), "2026-10-16T01:00:00Z");
+    assert_eq!(post.meta.date, "2026-10-16T01:00:00Z");
+    assert_eq!(post.meta.created_at, "2026-10-16T00:00:00Z");
+    let published = post.clone();
+    post.git_commit = "another unrelated commit".into();
+    content::stamp(&mut post, Some(&published), "2026-10-16T02:00:00Z");
+    assert_eq!(post.meta.updated, published.meta.updated);
+    let unchanged = post.clone();
+    post.pages
+        .insert("chapter.md".into(), "Changed second page".into());
+    content::stamp(&mut post, Some(&unchanged), "2026-10-16T03:00:00Z");
+    assert_eq!(post.meta.updated, "2026-10-16T03:00:00Z");
+    assert_eq!(post.meta.date, published.meta.date);
 }
 
 #[tokio::test]
-async fn author_import_isolates_objects_and_handles_same_ids_index_deletion_and_recovery() {
+async fn author_import_preserves_live_articles_on_bad_index_and_recovers_after_fix() {
     let dir = tempfile::tempdir().unwrap();
     let ingress = dir.path().join("ingress");
     std::fs::create_dir(&ingress).unwrap();
     let alice = ssh::init_author(&ingress, "alice").await.unwrap();
     let bob = ssh::init_author(&ingress, "bob").await.unwrap();
-    let a_body = markdown("first", "draft", "Alice private body");
-    let b_body = markdown("first", "published", "Bob public body");
+    let a_index = manifest("first", "posts/a", false);
+    let b_index = manifest("first", "posts/b", true);
     let a = commit(
         &alice,
         None,
         &[
-            ("index.txt", "100644", "first posts/a index.md"),
-            ("posts/a/index.md", "100644", &a_body),
+            ("index.toml", "100644", &a_index),
+            ("posts/a/main.md", "100644", "Alice private body"),
         ],
     )
     .await;
-    let b = commit(
-        &bob,
-        None,
-        &[
-            ("index.txt", "100644", "first posts/b index.md"),
-            ("posts/b/index.md", "100644", &b_body),
-        ],
-    )
-    .await;
+    let b_files = [
+        ("index.toml", "100644", b_index.as_str()),
+        ("posts/b/main.md", "100644", "Bob public body"),
+    ];
+    let b = commit(&bob, None, &b_files).await;
     content::git(&alice, &["update-ref", "refs/heads/main", &a], None)
         .await
         .unwrap();
@@ -340,8 +388,7 @@ async fn author_import_isolates_objects_and_handles_same_ids_index_deletion_and_
     assert!(
         content::git(&alice, &["cat-file", "-t", &b], None)
             .await
-            .is_err(),
-        "Bob objects leaked into Alice repository"
+            .is_err()
     );
     let data = dir.path().join("api");
     let names = vec!["alice".into(), "bob".into()];
@@ -351,28 +398,49 @@ async fn author_import_isolates_objects_and_handles_same_ids_index_deletion_and_
     assert_eq!(first.posts.len(), 2);
     assert_eq!(first.posts["alice~first"].author, "alice");
     assert_eq!(first.posts["bob~first"].article_id, "first");
-    let same = ssh::import_authors(&data, &ingress, &first, &names)
-        .await
-        .unwrap();
-    assert_eq!(same.commit, first.commit);
-    let removed = commit(
+    let broken = commit(
         &bob,
         Some(&b),
         &[
-            ("index.txt", "100644", ""),
-            ("posts/b/index.md", "100644", &b_body),
+            ("index.toml", "100644", "[[articles"),
+            ("posts/b/main.md", "100644", "Changed pending body"),
         ],
     )
     .await;
+    content::git(&bob, &["update-ref", "refs/heads/main", &broken], None)
+        .await
+        .unwrap();
+    let staged = ssh::import_authors(&data, &ingress, &first, &names)
+        .await
+        .unwrap();
+    assert_eq!(staged.commit, first.commit);
+    assert_eq!(staged.posts["bob~first"], first.posts["bob~first"]);
+    assert_eq!(staged.pending["bob"].commit, broken);
+    let staged_again = ssh::import_authors(&data, &ingress, &staged, &names)
+        .await
+        .unwrap();
+    assert_eq!(staged_again.pending, staged.pending);
+    let fixed = commit(&bob, Some(&broken), &b_files).await;
+    content::git(&bob, &["update-ref", "refs/heads/main", &fixed], None)
+        .await
+        .unwrap();
+    let repaired = ssh::import_authors(&data, &ingress, &staged, &names)
+        .await
+        .unwrap();
+    assert!(repaired.pending.is_empty());
+    assert_eq!(
+        repaired.posts["bob~first"].meta.updated,
+        first.posts["bob~first"].meta.updated
+    );
+    let removed = commit(&bob, Some(&fixed), &[("index.toml", "100644", &b_index)]).await;
     content::git(&bob, &["update-ref", "refs/heads/main", &removed], None)
         .await
         .unwrap();
-    let next = ssh::import_authors(&data, &ingress, &first, &names)
+    let next = ssh::import_authors(&data, &ingress, &repaired, &names)
         .await
         .unwrap();
     assert!(!next.posts.contains_key("bob~first"));
     assert!(next.posts.contains_key("alice~first"));
-    // Recover all authors from private Git caches after losing the derived collection.
     let rebuilt = ssh::import_authors(&data, &ingress, &Snapshot::default(), &names)
         .await
         .unwrap();
@@ -476,8 +544,8 @@ async fn app(dir: &std::path::Path) -> Arc<App> {
     let accounts = accounts::load(dir, &config, grants.repository)
         .await
         .unwrap();
-    let published = content::parse(markdown("alice-public", "published", "Hello"), vec![]).unwrap();
-    let draft = content::parse(markdown("alice-secret", "draft", "Secret"), vec![]).unwrap();
+    let published = test_post("alice-public", true, "Hello");
+    let draft = test_post("alice-secret", false, "Secret");
     Arc::new(App {
         data: dir.into(),
         ssh_config: config,
@@ -489,6 +557,7 @@ async fn app(dir: &std::path::Path) -> Arc<App> {
         snapshot: RwLock::new(Snapshot {
             commit: "test".into(),
             revisions: BTreeMap::new(),
+            pending: BTreeMap::new(),
             posts: BTreeMap::from([
                 ("alice-public".into(), published),
                 ("alice-secret".into(), draft),
@@ -680,6 +749,24 @@ async fn registration_login_grants_revocation_and_private_content_boundaries() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, value) = request(
+        app.clone(),
+        "GET",
+        "/api/posts/alice-public/pages/main.md",
+        Value::Null,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["markdown"], "Hello");
+    for path in [
+        "/api/posts/alice-secret/pages/main.md",
+        "/api/posts/alice-public/pages/unlinked.md",
+    ] {
+        let (status, _, _) = request(app.clone(), "GET", path, Value::Null, None, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
     let (_, _, value) = request(app.clone(), "GET", "/api/stats", Value::Null, None, None).await;
     assert_eq!(value["published_posts"], 1);
     let (status, _, _) = request(

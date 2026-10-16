@@ -46,13 +46,35 @@ pub async fn rebuild(snapshot: &Snapshot) -> Result<()> {
             .await?;
     }
     if db
-        .query("SELECT id FROM blog_articles LIMIT 1")
+        .query("SELECT id, created_at FROM blog_articles LIMIT 1")
         .await
         .is_err()
     {
-        db.query("CREATE TABLE blog_articles (id TEXT PRIMARY KEY, author TEXT, article_id TEXT, title TEXT, description TEXT, status TEXT, published_at TEXT, updated_at TEXT, path TEXT, format TEXT, git_commit TEXT)").await?;
+        // Only this rebuildable table changes shape; no identity/interaction data lives here.
+        if db
+            .query("SELECT id FROM blog_articles LIMIT 1")
+            .await
+            .is_ok()
+        {
+            db.query("DROP TABLE blog_articles").await?;
+        }
+        db.query("CREATE TABLE blog_articles (id TEXT PRIMARY KEY, author TEXT, article_id TEXT, title TEXT, description TEXT, status TEXT, created_at TEXT, published_at TEXT, updated_at TEXT, path TEXT, format TEXT, cover TEXT, entry TEXT, git_commit TEXT)").await?;
+    }
+    if db.query("SELECT id FROM blog_pages LIMIT 1").await.is_err() {
+        db.query("CREATE TABLE blog_pages (id TEXT, name TEXT, path TEXT, git_commit TEXT)")
+            .await?;
+    }
+    if db
+        .query("SELECT id FROM blog_article_tags LIMIT 1")
+        .await
+        .is_err()
+    {
+        db.query("CREATE TABLE blog_article_tags (id TEXT, tag TEXT)")
+            .await?;
     }
     db.query("BEGIN").await?;
+    db.query("DELETE FROM blog_pages").await?;
+    db.query("DELETE FROM blog_article_tags").await?;
     db.query("DELETE FROM blog_articles").await?;
     for post in snapshot.posts.values() {
         let meta = &post.meta;
@@ -60,14 +82,36 @@ pub async fn rebuild(snapshot: &Snapshot) -> Result<()> {
             Status::Draft => "draft",
             Status::Published => "published",
         };
-        let q = Query::new("INSERT INTO blog_articles (id, author, article_id, title, description, status, published_at, updated_at, path, format, git_commit) VALUES (")
+        let q = Query::new("INSERT INTO blog_articles (id, author, article_id, title, description, status, created_at, published_at, updated_at, path, format, cover, entry, git_commit) VALUES (")
             .bind(meta.slug.as_str()).push(", ").bind(post.author.as_str()).push(", ")
             .bind(post.article_id.as_str()).push(", ").bind(meta.title.as_str()).push(", ")
             .bind(meta.description.as_str()).push(", ").bind(status).push(", ")
-            .bind(meta.date.as_str()).push(", ").bind(meta.updated.as_str()).push(", ")
+            .bind(meta.created_at.as_str()).push(", ").bind(meta.date.as_str()).push(", ").bind(meta.updated.as_str()).push(", ")
             .bind(post.path.as_str()).push(", ").bind(post.format.as_str()).push(", ")
+            .bind(meta.cover.as_deref().unwrap_or("")).push(", ").bind(post.entry.as_str()).push(", ")
             .bind(post.git_commit.as_str()).push(")");
         db.query(q.as_str()).await?;
+        let folder = post.path.rsplit_once('/').context("正文路径无效")?.0;
+        for name in post.pages.keys() {
+            let q = Query::new("INSERT INTO blog_pages (id, name, path, git_commit) VALUES (")
+                .bind(meta.slug.as_str())
+                .push(", ")
+                .bind(name.as_str())
+                .push(", ")
+                .bind(format!("{folder}/{name}").as_str())
+                .push(", ")
+                .bind(post.git_commit.as_str())
+                .push(")");
+            db.query(q.as_str()).await?;
+        }
+        for tag in &meta.tags {
+            let q = Query::new("INSERT INTO blog_article_tags (id, tag) VALUES (")
+                .bind(meta.slug.as_str())
+                .push(", ")
+                .bind(tag.as_str())
+                .push(")");
+            db.query(q.as_str()).await?;
+        }
     }
     db.query("DELETE FROM blog_tags").await?;
     db.query("DELETE FROM blog_posts").await?;
@@ -169,7 +213,28 @@ pub async fn consistent(snapshot: &Snapshot) -> Result<bool> {
         .iter()
         .filter_map(|row| Some((row.first()?.as_str()?, row.get(1)?.as_str()?)))
         .collect();
-    let matches = !articles.truncated
+    let page_count = db.query("SELECT count(*) FROM blog_pages").await?;
+    let all_tag_count = db.query("SELECT count(*) FROM blog_article_tags").await?;
+    let expected_pages = snapshot
+        .posts
+        .values()
+        .map(|p| p.pages.len())
+        .sum::<usize>() as u64;
+    let expected_all_tags = snapshot
+        .posts
+        .values()
+        .map(|p| p.meta.tags.len())
+        .sum::<usize>() as u64;
+    let count_value = |result: &chusql_driver::QueryResult| {
+        result
+            .rows
+            .first()
+            .and_then(|r| r.first())
+            .and_then(|v| v.as_u64())
+    };
+    let matches = count_value(&page_count) == Some(expected_pages)
+        && count_value(&all_tag_count) == Some(expected_all_tags)
+        && !articles.truncated
         && articles.rows.len() == expected_articles.len()
         && actual_articles == expected_articles
         && !result.truncated

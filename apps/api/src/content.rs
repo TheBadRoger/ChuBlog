@@ -27,6 +27,8 @@ pub enum Status {
 pub struct Metadata {
     pub title: String,
     #[serde(default)]
+    pub author: String,
+    #[serde(default)]
     pub cover: Option<String>,
     #[serde(default)]
     pub created_at: String,
@@ -107,6 +109,8 @@ pub fn slug(value: &str) -> Result<&str> {
 }
 
 pub fn stamp(post: &mut Post, previous: Option<&Post>, now: &str) {
+    // Legacy author-supplied dates are not trusted as server publication records.
+    let previous = previous.filter(|p| !p.meta.created_at.is_empty());
     post.meta.created_at = previous
         .map(|p| p.meta.created_at.clone())
         .filter(|s| !s.is_empty())
@@ -284,19 +288,9 @@ pub enum Scan {
     Ready(Snapshot),
     Pending(String),
 }
-impl Scan {
-    pub fn ready(self) -> Result<Snapshot> {
-        match self {
-            Self::Ready(snapshot) => Ok(snapshot),
-            Self::Pending(reason) => anyhow::bail!("索引待修复：{reason}"),
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
-    #[serde(default)]
     articles: Vec<ManifestEntry>,
 }
 #[derive(Debug, Deserialize)]
@@ -322,7 +316,8 @@ fn default_entry() -> String {
 pub fn manifest(text: &str) -> Result<Vec<ManifestEntry>> {
     ensure!(text.len() <= 65536, "index.toml 超过 64 KiB");
     validate_text(text)?;
-    let index: Manifest = toml::from_str(text).context("index.toml 格式或字段无效")?;
+    let index: Manifest = toml::from_str(text)
+        .map_err(|error: toml::de::Error| anyhow::anyhow!("index.toml: {}", error.message()))?;
     ensure!(index.articles.len() <= 1000, "最多 1000 篇文章");
     let mut ids = std::collections::BTreeSet::new();
     let mut folders = std::collections::BTreeSet::new();
@@ -361,6 +356,11 @@ pub fn manifest(text: &str) -> Result<Vec<ManifestEntry>> {
                     .all(|t| !t.trim().is_empty() && t.len() <= 80),
             "标签无效"
         );
+        validate_text(&article.title)?;
+        validate_text(&article.description)?;
+        for tag in &article.tags {
+            validate_text(tag)?;
+        }
         if let Some(cover) = &article.cover {
             filename(cover)?;
         }
@@ -450,7 +450,11 @@ pub async fn scan_at(repo: &Path, commit: &str) -> Result<Scan> {
         ensure!(total <= MAX_SNAPSHOT, "作者仓库超过 64 MiB 配额");
         let bytes = git(repo, &["cat-file", "blob", info[2]], None).await?;
         if is_index {
-            index = Some(String::from_utf8(bytes).context("index.toml 必须为 UTF-8"));
+            let text = String::from_utf8(bytes).context("index.toml 必须为 UTF-8");
+            if let Ok(value) = &text {
+                validate_text(value)?;
+            }
+            index = Some(text);
             continue;
         }
         let folder = grouped.entry(format!("posts/{}", parts[1])).or_default();
@@ -482,9 +486,11 @@ pub async fn scan_at(repo: &Path, commit: &str) -> Result<Scan> {
     let index = match index {
         Some(Ok(text)) => match manifest(&text) {
             Ok(index) => index,
-            Err(error) => return Ok(Scan::Pending(error.to_string())),
+            Err(error) => return Ok(Scan::Pending(error.to_string().chars().take(512).collect())),
         },
-        Some(Err(error)) => return Ok(Scan::Pending(error.to_string())),
+        Some(Err(error)) => {
+            return Ok(Scan::Pending(error.to_string().chars().take(512).collect()));
+        }
         None => return Ok(Scan::Pending("缺少 index.toml".into())),
     };
     let result = build_posts(index, &mut grouped, commit);
@@ -495,7 +501,7 @@ pub async fn scan_at(repo: &Path, commit: &str) -> Result<Scan> {
             revisions: BTreeMap::new(),
             pending: BTreeMap::new(),
         })),
-        Err(error) => Ok(Scan::Pending(error.to_string())),
+        Err(error) => Ok(Scan::Pending(error.to_string().chars().take(512).collect())),
     }
 }
 
@@ -559,6 +565,7 @@ fn build_posts(
                 }
             }
             pages.insert(name, text.clone());
+            ensure!(pages.len() <= 64, "每篇文章最多 64 个可达页面");
         }
         ensure!(
             images
@@ -577,6 +584,7 @@ fn build_posts(
             Post {
                 meta: Metadata {
                     title: article.title,
+                    author: String::new(),
                     slug: id.clone(),
                     description: article.description,
                     tags: article.tags,

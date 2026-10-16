@@ -1,4 +1,5 @@
-FROM debian:trixie-slim AS base
+ARG DEBIAN_IMAGE=debian:trixie-slim
+FROM ${DEBIAN_IMAGE} AS base
 ARG DEBIAN_MIRROR=deb.debian.org
 RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates libgmp10 curl util-linux && rm -rf /var/lib/apt/lists/*
@@ -25,7 +26,7 @@ COPY init-volumes.sh /usr/local/bin/init-volumes
 RUN chmod 755 /usr/local/bin/init-volumes
 ENTRYPOINT ["/usr/local/bin/init-volumes"]
 
-FROM debian:trixie-slim AS database
+FROM ${DEBIAN_IMAGE} AS database
 ARG DEBIAN_MIRROR=deb.debian.org
 RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources
 RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 ca-certificates && rm -rf /var/lib/apt/lists/* && useradd -u 10003 -M -s /usr/sbin/nologin chusql

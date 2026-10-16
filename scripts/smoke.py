@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -18,6 +19,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 ORIGIN = 'http://localhost:18080'
 parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--browser-test', action='store_true', help='also run Python Playwright frontend journeys')
 parser.add_argument('--key-type', choices=['ed25519', 'rsa'], default='ed25519')
 args = parser.parse_args()
 
@@ -68,6 +70,7 @@ with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
     envfile = tmp / '.env'
     envfile.write_text(f"PUBLIC_ORIGIN={ORIGIN}\nSITE_ADDRESS=http://localhost:80\nADMIN_PASSWORD_HASH='{hashed}'\n"
                        f"CHUSQL_ROOT_PASSWORD={secrets.token_urlsafe(24)}\nCHUSQL_PASSWORD={secrets.token_urlsafe(24)}\n"
+                       f"REGISTRY_PREFIX={os.environ.get('REGISTRY_PREFIX', '')}\n"
                        'DEBIAN_MIRROR=mirrors.ustc.edu.cn\nALLOW_REGISTRATION=true\nHTTP_BIND=127.0.0.1\nHTTP_PORT=18080\nHTTPS_PORT=18443\nSSH_BIND=127.0.0.1\nSSH_PORT=12222\n')
     envfile.chmod(0o600)
     project = 'chublog-test-' + secrets.token_hex(4)
@@ -82,7 +85,7 @@ printf '%s\n' "{\"method\":\"login\",\"user\":\"root\",\"password\":\"${CHUSQL_R
 read -r reply <&3
 printf '%s\n' '{"method":"query","sql":"USE chublog"}' >&3
 read -r reply <&3
-printf '%s\n' '{"method":"query","sql":"SELECT id, author, article_id, path FROM blog_articles"}' >&3
+printf '%s\n' '{"method":"query","sql":"SELECT id, author, article_id, path, created_at, published_at, updated_at, entry, cover FROM blog_articles"}' >&3
 read -r reply <&3
 printf '%s\n' "$reply"
 '''
@@ -110,12 +113,15 @@ printf '%s\n' "$reply"
         run(['git', '-C', str(local), 'config', 'user.name', 'Alice'])
         run(['git', '-C', str(local), 'config', 'user.email', 'alice@example.invalid'])
         run(['git', '-C', str(local), 'remote', 'add', 'origin', 'git@localhost:content.git'])
-        article = local / 'posts/alice-first/index.md'
+        article = local / 'posts/alice-first/main.md'
         article.parent.mkdir(parents=True)
-        original = (ROOT / 'content/posts/welcome/index.md').read_text().replace('slug: "welcome"', 'slug: "alice-first"')
+        original = (ROOT / 'content/posts/welcome/main.md').read_text()
         article.write_text(original)
-        manifest = local / 'index.txt'
-        manifest.write_text('alice-first posts/alice-first index.md\n')
+        manifest = local / 'index.toml'
+        original_manifest = (ROOT / 'content/index.toml').read_text().replace('id = "welcome"', 'id = "alice-first"').replace('posts/welcome', 'posts/alice-first')
+        manifest.write_text(original_manifest)
+        chapter = article.parent / 'chapter.md'
+        chapter.write_text((ROOT / 'content/posts/welcome/chapter.md').read_text())
 
         def commit():
             run(['git', '-C', str(local), 'add', '.'])
@@ -128,24 +134,56 @@ printf '%s\n' "$reply"
 
         commit()
         push(False)
-        admin.call('PATCH', '/api/admin/users/alice', {'enabled': True, 'role': 'publisher', 'prefixes': ['alice-']})
+        admin.call('PATCH', '/api/admin/users/alice', {'enabled': True, 'role': 'publisher'})
         push()
         wait_for(lambda: Client().call('GET', '/api/posts/alice~alice-first')['meta']['slug'] == 'alice~alice-first')
         wait_for(lambda: (lambda s: s['indexed_commit'] == s['commit'])(admin.call('GET', '/api/admin/status')), timeout=120)
-        assert database_articles() == [['alice~alice-first', 'alice', 'alice-first', 'posts/alice-first/index.md']]
+        metadata_rows = database_articles()
+        assert len(metadata_rows) == 1
+        assert metadata_rows[0][:4] == ['alice~alice-first', 'alice', 'alice-first', 'posts/alice-first/main.md']
         print('PASS: registration, independent grant, real SSH push, publication, real ChuSQL metadata')
+        first_article = Client().call('GET', '/api/posts/alice~alice-first')
+        assert first_article['author'] == 'alice'
+        assert {p['name'] for p in first_article['pages']} == {'main.md', 'chapter.md'}
+        assert Client().call('GET', '/api/posts/alice~alice-first/pages/chapter.md')['markdown'] == chapter.read_text()
+        original_dates = first_article['meta']
+        assert metadata_rows[0][4:7] == [original_dates['created_at'], original_dates['date'], original_dates['updated']]
+        assert metadata_rows[0][7:] == ['main.md', '']
+        # Malformed TOML is staged and survives restart without replacing the live version.
+        manifest.write_text('[[articles')
+        article.write_text(original + '\nPending change\n')
+        commit()
+        push()
+        wait_for(lambda: 'alice' in admin.call('GET', '/api/admin/status')['pending'])
+        assert Client().call('GET', '/api/posts/alice~alice-first')['markdown'] == original
+        run(compose + ['restart', 'api'])
+        wait_for(lambda: Client().call('GET', '/api/posts/alice~alice-first')['markdown'] == original)
+        admin.csrf = admin.call('POST', '/api/auth/login', {'username': 'admin', 'password': password})['csrf']
+        assert 'alice' in admin.call('GET', '/api/admin/status')['pending']
+        manifest.write_text(original_manifest)
+        commit()
+        push()
+        wait_for(lambda: 'Pending change' in Client().call('GET', '/api/posts/alice~alice-first')['markdown'])
+        updated = Client().call('GET', '/api/posts/alice~alice-first')['meta']
+        assert updated['date'] == original_dates['date']
+        assert updated['created_at'] == original_dates['created_at']
+        assert updated['updated'] > original_dates['updated']
+        print('PASS: linked Markdown pages, staged broken TOML across restart, repaired import and server timestamps')
+        article.write_text(original)
+        commit()
+        push()
         ssh = ['ssh', '-i', str(tmp / 'key'), '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', f'UserKnownHostsFile={tmp / "known_hosts"}', '-p', '12222', 'git@localhost']
         result = subprocess.run(ssh + ['id'], capture_output=True)
         assert result.returncode != 0, 'SSH shell command unexpectedly succeeded'
         # Invalid commits must not advance the remote branch. Reset only this disposable local test clone.
-        for kind in ['script', 'symlink', 'manifest', 'certificate', 'gitignore', 'oversize', 'pack']:
+        for kind in ['script', 'symlink', 'traversal', 'certificate', 'gitignore', 'oversize', 'pack']:
             if kind == 'script':
                 article.write_text(original + '\n<script>alert(1)</script>\n')
             elif kind == 'symlink':
                 article.unlink()
                 article.symlink_to('/etc/passwd')
-            elif kind == 'manifest':
-                manifest.write_text('alice-first posts/missing index.md\n')
+            elif kind == 'traversal':
+                article.write_text(original + '\n[escape](../other/main.md)\n')
             elif kind == 'certificate':
                 (article.parent / 'certificate.txt').write_text('-----BEGIN CERTIFICATE-----\ninvalid\n')
             elif kind == 'gitignore':
@@ -159,7 +197,7 @@ printf '%s\n' "$reply"
             run(['git', '-C', str(local), 'reset', '--hard', 'origin/main'], capture_output=True)
         push(False, 'main:refs/heads/other')
         push(False, '--delete', 'main')
-        print('PASS: arbitrary command, HTML, symlink, invalid index, disguised certificate, gitignore, oversize, branch and deletion rejected')
+        print('PASS: arbitrary command, HTML, symlink, cross-article link, disguised certificate, gitignore, oversize, branch and deletion rejected')
         # A second authorized key maps the same remote alias to a separate object store.
         bob = Client()
         bob.call('POST', '/api/auth/register', {'username': 'bob', 'password': password})
@@ -171,7 +209,7 @@ printf '%s\n' "$reply"
         bob_env['GIT_SSH_COMMAND'] = env['GIT_SSH_COMMAND'].replace(str(tmp / 'key'), str(tmp / 'bob-key'))
         bob_local = tmp / 'bob-articles'
         run(['git', 'clone', 'git@localhost:content.git', str(bob_local)], env=bob_env, capture_output=True)
-        assert not (bob_local / 'posts/alice-first/index.md').exists(), 'Alice content leaked into Bob clone'
+        assert not (bob_local / 'posts/alice-first/main.md').exists(), 'Alice content leaked into Bob clone'
         alice_commit = run(['git', '-C', str(local), 'rev-parse', 'HEAD'], capture_output=True).stdout.strip()
         result = subprocess.run(['git', '-C', str(bob_local), 'fetch', 'origin', alice_commit], env=bob_env, capture_output=True)
         assert result.returncode != 0, 'Bob fetched Alice commit by hash'
@@ -179,7 +217,7 @@ printf '%s\n' "$reply"
         assert result.returncode != 0, 'Bob selected another repository path'
         print('PASS: separate author clone, inaccessible foreign commit and forbidden repository selection')
         # Removing only an index entry deletes the live article, while retaining its files.
-        manifest.write_text('')
+        manifest.write_text('articles = []\n')
         commit()
         push()
         wait_for(lambda: Client().call('GET', '/api/stats')['published_posts'] == 0)
@@ -187,12 +225,20 @@ printf '%s\n' "$reply"
         Client().call('GET', '/api/posts/alice~alice-first', expected=404)
         assert database_articles() == [], 'Index removal did not delete database metadata'
         print('PASS: index-only deletion removes HTTP article and database metadata')
-        manifest.write_text('alice-first posts/alice-first index.md\n')
-        article.write_text(original.replace('status: "published"', 'status: "draft"'))
+        manifest.write_text(original_manifest)
+        # A valid index whose entry disappeared denotes no article, not a staged update.
+        article.unlink()
+        commit()
+        push()
+        wait_for(lambda: not admin.call('GET', '/api/admin/status')['pending'])
+        assert Client().call('GET', '/api/stats')['published_posts'] == 0
+        article.write_text(original)
+        manifest.write_text(original_manifest.replace('public = true', 'public = false'))
         commit()
         push()
         wait_for(lambda: Client().call('GET', '/api/stats')['published_posts'] == 0)
         Client().call('GET', '/api/posts/alice~alice-first', expected=404)
+        manifest.write_text(original_manifest)
         article.write_text(original)
         commit()
         push()
@@ -209,6 +255,8 @@ printf '%s\n' "$reply"
         run(compose + ['start', 'db'])
         wait_for(lambda: (lambda s: s['indexed_commit'] == s['commit'])(admin.call('GET', '/api/admin/status')), timeout=120)
         print('PASS: draft privacy, database outage, API restart recovery, revocation, automatic index recovery')
+        if args.browser_test:
+            run([sys.executable, str(ROOT / 'scripts/test-web.py'), '--origin', ORIGIN], input=password)
     except Exception:
         run(compose + ['logs', '--tail', '40'])
         raise

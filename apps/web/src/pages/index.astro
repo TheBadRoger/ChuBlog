@@ -1,0 +1,22 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base home title="个人博客正在施工中" description="个人博客正在施工中。已完成文章阅读、账户登录与 Git 发布，其他功能逐步完善。">
+  <section class="construction" aria-labelledby="construction-title">
+    <h1 id="construction-title">个人博客正在施工中</h1>
+    <div class="construction-progress">
+      <section aria-labelledby="finished-title">
+        <h2 id="finished-title">已完成</h2>
+        <p>文章阅读与多页导航、用户注册与登录、SSH 公钥设置、Git 文章发布</p>
+      </section>
+      <section aria-labelledby="pending-title">
+        <h2 id="pending-title">未完成</h2>
+        <p>评论、点赞与收藏、热度推荐、内部文章、站长审核</p>
+      </section>
+    </div>
+    <nav class="home-links" aria-label="快捷入口">
+      <a class="button" href="/articles">阅读文章</a>
+      <a class="text-link" href="/account">账户与发布</a>
+    </nav>
+  </section>
+</Base>

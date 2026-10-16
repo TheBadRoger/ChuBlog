@@ -1,0 +1,24 @@
+---
+import Base from '../layouts/Base.astro';
+const register = Astro.url.searchParams.get('mode') === 'register';
+---
+<Base title={register ? '注册' : '登录'}>
+  <div class="auth-shell">
+    <header class="page-heading"><h1>{register ? '注册账户' : '登录'}</h1><p>{register ? '注册后可在账户中登记发布用的 SSH 公钥。' : '管理账户和文章发布权限。'}</p></header>
+    <nav class="auth-tabs" aria-label="账户入口"><a href="/login" aria-current={!register ? 'page' : undefined}>登录</a><a href="/login?mode=register" aria-current={register ? 'page' : undefined}>注册</a></nav>
+    {Astro.url.searchParams.get('changed') === '1' && <p class="notice">密码已修改，请重新登录。</p>}
+    {Astro.url.searchParams.get('registered') === '1' && <p class="notice">账户已创建，请登录。</p>}
+    <form id="auth-form" data-mode={register ? 'register' : 'login'}>
+      <label for="username">用户名</label>
+      <input id="username" name="username" spellcheck="false" autocapitalize="none" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z][a-z0-9-]{2,31}" aria-describedby={register ? 'username-help' : undefined} />
+      {register && <p class="field-help" id="username-help">3 至 32 位小写字母、数字或短横线，以字母开头。</p>}
+      <label for="password">密码</label>
+      <input id="password" type="password" name="password" autocomplete={register ? 'new-password' : 'current-password'} required maxlength="1024" aria-describedby={register ? 'password-help' : undefined} />
+      {register && <p class="field-help" id="password-help">至少 12 个字节，请使用较长且不重复的密码。</p>}
+      {register && <><label for="password-confirm">确认密码</label><input id="password-confirm" type="password" name="confirm" autocomplete="new-password" required maxlength="1024" /></>}
+      <p class="form-status" role="status" aria-live="polite"></p>
+      <button class="button" type="submit">{register ? '创建账户' : '登录'}</button>
+    </form>
+    <noscript><p class="notice">登录与注册需要启用 JavaScript。</p></noscript>
+  </div>
+</Base>
