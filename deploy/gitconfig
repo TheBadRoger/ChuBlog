@@ -1,2 +1,2 @@
 [safe]
-    directory = /srv/ingress/content.git
+    directory = /srv/ingress/authors/*

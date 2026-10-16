@@ -8,7 +8,7 @@ RUN groupadd -g 10002 ingress && useradd -u 10001 -g ingress -M -s /usr/sbin/nol
 
 FROM base AS api
 USER 10001:10002
-ENV API_BIND=0.0.0.0:3001 DATA_DIR=/data CHUBLOG_SSH_CONFIG=/auth/publishers.json INGRESS_REPO=/srv/ingress/content.git RUST_LOG=info
+ENV API_BIND=0.0.0.0:3001 DATA_DIR=/data CHUBLOG_SSH_CONFIG=/auth/publishers.json INGRESS_DIR=/srv/ingress/authors RUST_LOG=info
 ENTRYPOINT ["chublog-api"]
 
 FROM base AS ssh

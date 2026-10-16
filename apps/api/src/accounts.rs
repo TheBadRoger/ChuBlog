@@ -34,6 +34,7 @@ pub enum Role {
 pub struct Grant {
     pub enabled: bool,
     pub role: Role,
+    #[serde(default)]
     pub prefixes: Vec<String>,
     pub ssh_key: Option<String>,
 }
@@ -507,6 +508,7 @@ pub async fn users(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult
 pub struct GrantInput {
     enabled: bool,
     role: Role,
+    #[serde(default)]
     prefixes: Vec<String>,
 }
 pub async fn grant(
@@ -517,9 +519,6 @@ pub async fn grant(
 ) -> ApiResult<Json<Value>> {
     let actor = authorize(&app, &headers, true, true).await?;
     ensure_prefixes(&input.prefixes).map_err(bad)?;
-    if input.role == Role::Publisher && input.prefixes.is_empty() {
-        return Err(bad("发布者必须分配文章前缀"));
-    }
     let mut accounts = app.accounts.lock().await;
     if !accounts
         .grants
@@ -534,22 +533,6 @@ pub async fn grant(
     }
     if actor == name && (input.role != Role::Admin || !input.enabled) {
         return Err(bad("不能取消自己的管理权限或停用自己"));
-    }
-    for (other, grant) in &accounts.grants.publishers {
-        if other == &name || !grant.enabled || grant.role == Role::Reader {
-            continue;
-        }
-        if input.enabled
-            && input.role != Role::Reader
-            && input.prefixes.iter().any(|a| {
-                grant
-                    .prefixes
-                    .iter()
-                    .any(|b| a.starts_with(b) || b.starts_with(a))
-            })
-        {
-            return Err(bad("发布前缀与其他用户重叠"));
-        }
     }
     let mut grants = accounts.grants.clone();
     let entry = grants

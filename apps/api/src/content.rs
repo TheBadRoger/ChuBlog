@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -23,10 +22,15 @@ pub enum Status {
     Published,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
     pub title: String,
+    #[serde(default)]
+    pub cover: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
     pub slug: String,
     pub date: String,
     pub updated: String,
@@ -35,24 +39,51 @@ pub struct Metadata {
     pub description: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Asset {
     pub name: String,
     pub data: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Post {
     pub meta: Metadata,
     pub markdown: String,
+    #[serde(default)]
+    pub entry: String,
+    #[serde(default)]
+    pub pages: BTreeMap<String, String>,
     pub assets: Vec<Asset>,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub article_id: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub git_commit: String,
+    #[serde(default = "markdown_format")]
+    pub format: String,
+}
+fn markdown_format() -> String {
+    "markdown".into()
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Snapshot {
     pub commit: String,
     pub posts: BTreeMap<String, Post>,
+    #[serde(default)]
+    pub revisions: BTreeMap<String, String>,
+    #[serde(default)]
+    pub pending: BTreeMap<String, PendingIndex>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PendingIndex {
+    pub commit: String,
+    pub reason: String,
 }
 
 pub fn slug(value: &str) -> Result<&str> {
@@ -75,51 +106,38 @@ pub fn slug(value: &str) -> Result<&str> {
     Ok(value)
 }
 
-pub fn parse(markdown: String, assets: Vec<Asset>) -> Result<Post> {
-    ensure!(markdown.len() <= MAX_MARKDOWN, "Markdown 超过 256 KiB");
-    let normalized = markdown.replace("\r\n", "\n");
-    let rest = normalized
-        .strip_prefix("---\n")
-        .context("缺少 YAML Frontmatter")?;
-    let (yaml, _) = rest.split_once("\n---\n").context("Frontmatter 未闭合")?;
-    let meta: Metadata = serde_yaml::from_str(yaml).context("Frontmatter 无效")?;
-    slug(&meta.slug)?;
-    ensure!(
-        !meta.title.trim().is_empty() && meta.title.len() <= 240 && meta.description.len() <= 1000,
-        "标题或摘要长度无效"
-    );
-    for date in [&meta.date, &meta.updated] {
-        let parsed =
-            NaiveDate::parse_from_str(date, "%Y-%m-%d").context("日期必须为 YYYY-MM-DD")?;
-        ensure!(
-            parsed.format("%Y-%m-%d").to_string() == *date,
-            "日期格式不规范"
-        );
-    }
-    ensure!(meta.updated >= meta.date, "更新时间不能早于发布日期");
-    ensure!(
-        meta.tags.len() <= 12
-            && meta
-                .tags
-                .iter()
-                .all(|t| !t.trim().is_empty() && t.len() <= 80),
-        "标签无效"
-    );
-    ensure!(assets.len() <= 12, "最多 12 张图片");
-    let mut names = std::collections::HashSet::new();
-    let mut total = normalized.len();
-    for asset in &assets {
-        ensure!(names.insert(&asset.name), "图片名称重复");
-        let bytes = decode_asset(asset)?;
-        total += bytes.len();
-    }
-    ensure!(total <= 6 * 1024 * 1024, "文章及图片总计不得超过 6 MiB");
-    validate_markdown(rest.split_once("\n---\n").unwrap().1, &assets)?;
-    Ok(Post {
-        meta,
-        markdown: normalized,
-        assets,
-    })
+pub fn stamp(post: &mut Post, previous: Option<&Post>, now: &str) {
+    post.meta.created_at = previous
+        .map(|p| p.meta.created_at.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| now.into());
+    post.meta.date = previous
+        .map(|p| p.meta.date.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            if post.meta.status == Status::Published {
+                now.into()
+            } else {
+                String::new()
+            }
+        });
+    let unchanged = previous.is_some_and(|p| {
+        p.meta.title == post.meta.title
+            && p.meta.description == post.meta.description
+            && p.meta.tags == post.meta.tags
+            && p.meta.cover == post.meta.cover
+            && p.meta.status == post.meta.status
+            && p.path == post.path
+            && p.pages == post.pages
+            && p.assets == post.assets
+            && p.markdown == post.markdown
+            && p.entry == post.entry
+    });
+    post.meta.updated = if unchanged {
+        previous.unwrap().meta.updated.clone()
+    } else {
+        now.into()
+    };
 }
 
 pub fn decode_asset(asset: &Asset) -> Result<Vec<u8>> {
@@ -131,7 +149,7 @@ pub fn decode_asset(asset: &Asset) -> Result<Vec<u8>> {
             && name
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-            && name != "index.md",
+            && !matches!(name.as_str(), "index.md" | "index.markdown" | "index.txt"),
         "图片文件名无效"
     );
     ensure!(asset.data.len() <= 3 * 1024 * 1024, "图片超过大小限制");
@@ -261,19 +279,139 @@ pub async fn init(data: &Path) -> Result<PathBuf> {
     Ok(repo)
 }
 
-pub async fn scan(repo: &Path) -> Result<Snapshot> {
-    let commit = String::from_utf8(git(repo, &["rev-parse", "refs/heads/main"], None).await?)?
-        .trim()
-        .to_owned();
-    scan_at(repo, &commit).await
+#[derive(Debug)]
+pub enum Scan {
+    Ready(Snapshot),
+    Pending(String),
+}
+impl Scan {
+    pub fn ready(self) -> Result<Snapshot> {
+        match self {
+            Self::Ready(snapshot) => Ok(snapshot),
+            Self::Pending(reason) => anyhow::bail!("索引待修复：{reason}"),
+        }
+    }
 }
 
-pub async fn scan_at(repo: &Path, commit: &str) -> Result<Snapshot> {
-    let commit = commit.to_owned();
-    let entries = git(repo, &["ls-tree", "-rz", &commit], None).await?;
-    let mut grouped: BTreeMap<String, (Option<String>, Vec<Asset>)> = BTreeMap::new();
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    #[serde(default)]
+    articles: Vec<ManifestEntry>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestEntry {
+    pub id: String,
+    pub folder: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub cover: Option<String>,
+    #[serde(default, rename = "public")]
+    pub is_public: bool,
+    #[serde(default = "default_entry")]
+    pub entry: String,
+}
+fn default_entry() -> String {
+    "main.md".into()
+}
+pub fn manifest(text: &str) -> Result<Vec<ManifestEntry>> {
+    ensure!(text.len() <= 65536, "index.toml 超过 64 KiB");
+    validate_text(text)?;
+    let index: Manifest = toml::from_str(text).context("index.toml 格式或字段无效")?;
+    ensure!(index.articles.len() <= 1000, "最多 1000 篇文章");
+    let mut ids = std::collections::BTreeSet::new();
+    let mut folders = std::collections::BTreeSet::new();
+    for article in &index.articles {
+        slug(&article.id)?;
+        ensure!(
+            article.id.len() <= 40 && ids.insert(&article.id),
+            "文章 ID 过长或重复"
+        );
+        slug(
+            article
+                .folder
+                .strip_prefix("posts/")
+                .context("文章目录必须位于 posts 下")?,
+        )?;
+        ensure!(folders.insert(&article.folder), "文章目录不能重复映射");
+        filename(&article.entry)?;
+        ensure!(
+            matches!(
+                article.entry.rsplit('.').next(),
+                Some("md" | "markdown" | "txt")
+            ),
+            "入口必须为 md、markdown 或 txt"
+        );
+        ensure!(
+            !article.title.trim().is_empty()
+                && article.title.len() <= 240
+                && article.description.len() <= 1000,
+            "标题或简介长度无效"
+        );
+        ensure!(
+            article.tags.len() <= 12
+                && article
+                    .tags
+                    .iter()
+                    .all(|t| !t.trim().is_empty() && t.len() <= 80),
+            "标签无效"
+        );
+        if let Some(cover) = &article.cover {
+            filename(cover)?;
+        }
+    }
+    Ok(index.articles)
+}
+
+fn filename(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 100
+            && !name.starts_with('.')
+            && !name.contains("..")
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)),
+        "文件名无效"
+    );
+    Ok(())
+}
+
+pub fn validate_text(text: &str) -> Result<()> {
+    ensure!(
+        !text.contains("-----BEGIN ") && !text.contains("-----END "),
+        "禁止提交 PEM 证书或密钥"
+    );
+    ensure!(
+        !text.chars().any(|c| c == '\0'
+            || (c.is_control() && !"\n\r\t".contains(c))
+            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')),
+        "禁止控制符及双向隐藏字符"
+    );
+    Ok(())
+}
+
+#[derive(Default)]
+struct Folder {
+    texts: BTreeMap<String, String>,
+    assets: Vec<Asset>,
+    bytes: usize,
+}
+
+pub async fn scan_at(repo: &Path, commit: &str) -> Result<Scan> {
+    let entries = git(repo, &["ls-tree", "-rz", commit], None).await?;
+    let mut grouped: BTreeMap<String, Folder> = BTreeMap::new();
+    let mut index = None;
     let mut total = 0;
+    let mut count = 0;
     for entry in entries.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        count += 1;
+        ensure!(count <= 14001, "仓库文件数超过限制");
         let entry = std::str::from_utf8(entry)?;
         let (info, path) = entry.split_once('\t').context("Git 树格式错误")?;
         let info: Vec<_> = info.split_whitespace().collect();
@@ -282,46 +420,201 @@ pub async fn scan_at(repo: &Path, commit: &str) -> Result<Snapshot> {
             "禁止符号链接及特殊文件"
         );
         let parts: Vec<_> = path.split('/').collect();
+        let is_index = path == "index.toml";
+        if !is_index {
+            ensure!(
+                parts.len() == 3 && parts[0] == "posts",
+                "仅允许 index.toml 和 posts/文件夹/文件"
+            );
+            slug(parts[1])?;
+            filename(parts[2])?;
+        }
+        let extension = path.rsplit('.').next().unwrap_or("");
+        let text_file = matches!(extension, "txt" | "md" | "markdown");
         ensure!(
-            parts.len() == 3 && parts[0] == "posts",
-            "仓库包含非文章路径"
+            is_index || text_file || matches!(extension, "png" | "jpg" | "jpeg" | "webp"),
+            "仅允许 txt、md、markdown、PNG/JPEG/WebP；禁止证书、配置及隐藏文件"
         );
-        slug(parts[1])?;
         let size = String::from_utf8(git(repo, &["cat-file", "-s", info[2]], None).await?)?
             .trim()
             .parse::<usize>()?;
-        let limit = if parts[2] == "index.md" {
+        let limit = if is_index {
+            65536
+        } else if text_file {
             MAX_MARKDOWN
         } else {
             2 * 1024 * 1024
         };
         ensure!(size <= limit, "文件超过大小限制");
+        total += size;
+        ensure!(total <= MAX_SNAPSHOT, "作者仓库超过 64 MiB 配额");
         let bytes = git(repo, &["cat-file", "blob", info[2]], None).await?;
-        total += bytes.len();
-        ensure!(total <= MAX_SNAPSHOT, "内容仓库超过 64 MiB 配额");
-        let group = grouped.entry(parts[1].into()).or_default();
-        if parts[2] == "index.md" {
-            group.0 = Some(String::from_utf8(bytes)?);
+        if is_index {
+            index = Some(String::from_utf8(bytes).context("index.toml 必须为 UTF-8"));
+            continue;
+        }
+        let folder = grouped.entry(format!("posts/{}", parts[1])).or_default();
+        folder.bytes += bytes.len();
+        ensure!(folder.bytes <= 6 * 1024 * 1024, "文章目录不得超过 6 MiB");
+        if text_file {
+            let text = String::from_utf8(bytes).context("文本必须为 UTF-8")?;
+            validate_text(&text)?;
+            folder
+                .texts
+                .insert(parts[2].into(), text.replace("\r\n", "\n"));
         } else {
-            group.1.push(Asset {
+            let asset = Asset {
                 name: parts[2].into(),
                 data: STANDARD.encode(bytes),
-            });
+            };
+            decode_asset(&asset)?;
+            folder.assets.push(asset);
+            ensure!(folder.assets.len() <= 12, "每个目录最多 12 张图片");
         }
-        ensure!(grouped.len() <= 1000, "最多 1000 篇文章");
+        ensure!(grouped.len() <= 1000, "最多 1000 个文章目录");
     }
+    for folder in grouped.values() {
+        for text in folder.texts.values() {
+            validate_markdown(text, &folder.assets)?;
+        }
+    }
+    // Index/schema failures stage the commit, while security failures above reject the push.
+    let index = match index {
+        Some(Ok(text)) => match manifest(&text) {
+            Ok(index) => index,
+            Err(error) => return Ok(Scan::Pending(error.to_string())),
+        },
+        Some(Err(error)) => return Ok(Scan::Pending(error.to_string())),
+        None => return Ok(Scan::Pending("缺少 index.toml".into())),
+    };
+    let result = build_posts(index, &mut grouped, commit);
+    match result {
+        Ok(posts) => Ok(Scan::Ready(Snapshot {
+            commit: commit.into(),
+            posts,
+            revisions: BTreeMap::new(),
+            pending: BTreeMap::new(),
+        })),
+        Err(error) => Ok(Scan::Pending(error.to_string())),
+    }
+}
+
+fn local_target(url: &str) -> &str {
+    url.split('#')
+        .next()
+        .unwrap_or("")
+        .strip_prefix("./")
+        .unwrap_or_else(|| url.split('#').next().unwrap_or(""))
+}
+fn is_external(url: &str) -> bool {
+    url.starts_with("https://")
+        || url.starts_with("http://")
+        || url.starts_with("mailto:")
+        || url.starts_with('/')
+        || url.starts_with('#')
+}
+fn build_posts(
+    index: Vec<ManifestEntry>,
+    grouped: &mut BTreeMap<String, Folder>,
+    commit: &str,
+) -> Result<BTreeMap<String, Post>> {
+    use pulldown_cmark::{Event, Parser, Tag};
     let mut posts = BTreeMap::new();
-    for (key, (markdown, assets)) in grouped {
-        let post = parse(markdown.context("文章缺少 index.md")?, assets)?;
-        ensure!(post.meta.slug == key, "slug 与 Git 路径不一致");
-        posts.insert(key, post);
+    for article in index {
+        let Some(folder) = grouped.remove(&article.folder) else {
+            continue;
+        };
+        // A valid index with no entry document denotes an absent article.
+        let Some(body) = folder.texts.get(&article.entry).cloned() else {
+            continue;
+        };
+        let mut pages = BTreeMap::new();
+        let mut queue = vec![article.entry.clone()];
+        let mut images = std::collections::BTreeSet::new();
+        if let Some(cover) = &article.cover {
+            images.insert(cover.clone());
+        }
+        while let Some(name) = queue.pop() {
+            if pages.contains_key(&name) {
+                continue;
+            }
+            let text = folder
+                .texts
+                .get(&name)
+                .context("文章内链接指向不存在的页面")?;
+            for event in Parser::new_ext(text, pulldown_cmark::Options::all()) {
+                match event {
+                    Event::Start(Tag::Link { dest_url, .. }) if !is_external(&dest_url) => {
+                        let target = local_target(&dest_url);
+                        ensure!(
+                            folder.texts.contains_key(target),
+                            "文章内链接指向不存在的页面"
+                        );
+                        queue.push(target.into());
+                    }
+                    Event::Start(Tag::Image { dest_url, .. }) => {
+                        images.insert(local_target(&dest_url).into());
+                    }
+                    _ => {}
+                }
+            }
+            pages.insert(name, text.clone());
+        }
+        ensure!(
+            images
+                .iter()
+                .all(|name| folder.assets.iter().any(|a| &a.name == name)),
+            "封面或图片不存在"
+        );
+        let assets = folder
+            .assets
+            .into_iter()
+            .filter(|a| images.contains(&a.name))
+            .collect();
+        let id = article.id;
+        posts.insert(
+            id.clone(),
+            Post {
+                meta: Metadata {
+                    title: article.title,
+                    slug: id.clone(),
+                    description: article.description,
+                    tags: article.tags,
+                    cover: article.cover,
+                    status: if article.is_public {
+                        Status::Published
+                    } else {
+                        Status::Draft
+                    },
+                    date: String::new(),
+                    updated: String::new(),
+                    created_at: String::new(),
+                },
+                markdown: body,
+                entry: article.entry.clone(),
+                pages,
+                assets,
+                author: String::new(),
+                article_id: id,
+                path: format!("{}/{}", article.folder, article.entry),
+                git_commit: commit.into(),
+                format: if article.entry.ends_with(".txt") {
+                    "text"
+                } else {
+                    "markdown"
+                }
+                .into(),
+            },
+        );
     }
-    Ok(Snapshot { commit, posts })
+    Ok(posts)
 }
 
 pub async fn persist(data: &Path, snapshot: &Snapshot) -> Result<()> {
     let public = Snapshot {
         commit: snapshot.commit.clone(),
+        revisions: BTreeMap::new(),
+        pending: BTreeMap::new(),
         posts: snapshot
             .posts
             .iter()
@@ -340,12 +633,7 @@ pub async fn persist(data: &Path, snapshot: &Snapshot) -> Result<()> {
 
 pub fn validate_markdown(body: &str, assets: &[Asset]) -> Result<()> {
     use pulldown_cmark::{Event, Parser, Tag};
-    ensure!(
-        !body.chars().any(|c| c == '\0'
-            || (c.is_control() && !"\n\r\t".contains(c))
-            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')),
-        "禁止控制符及双向隐藏字符"
-    );
+    validate_text(body)?;
     for event in Parser::new_ext(body, pulldown_cmark::Options::all()) {
         match event {
             Event::Html(_) | Event::InlineHtml(_) => anyhow::bail!("Markdown 不允许原始 HTML"),
@@ -355,7 +643,15 @@ pub fn validate_markdown(body: &str, assets: &[Asset]) -> Result<()> {
                         || dest_url.starts_with("http://")
                         || dest_url.starts_with("mailto:")
                         || dest_url.starts_with('#')
-                        || (dest_url.starts_with('/') && !dest_url.starts_with("//")),
+                        || (dest_url.starts_with('/') && !dest_url.starts_with("//"))
+                        || (!is_external(&dest_url) && {
+                            let target = local_target(&dest_url);
+                            filename(target).is_ok()
+                                && matches!(
+                                    target.rsplit('.').next(),
+                                    Some("md" | "markdown" | "txt")
+                                )
+                        }),
                     "链接协议不允许"
                 );
                 ensure!(
@@ -364,7 +660,7 @@ pub fn validate_markdown(body: &str, assets: &[Asset]) -> Result<()> {
                 );
             }
             Event::Start(Tag::Image { dest_url, .. }) => ensure!(
-                assets.iter().any(|a| a.name == dest_url.as_ref()),
+                assets.iter().any(|a| a.name == local_target(&dest_url)),
                 "图片必须引用同文章已验证的图片文件"
             ),
             _ => {}
