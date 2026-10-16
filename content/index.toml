@@ -1,0 +1,9 @@
+[[articles]]
+id = "welcome"
+folder = "posts/welcome"
+title = "第一篇文章"
+description = "从本地 Markdown 开始。"
+tags = ["随笔"]
+public = true
+# entry = "main.md"  # 省略时默认 main.md
+# cover = "cover.png"  # 可选，同文章目录内已验证的图片

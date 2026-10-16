@@ -15,7 +15,8 @@
 | --- | --- | --- |
 | GET | `/api/health` | 公共，API 存活，不代表数据库或发布同步健康 |
 | GET | `/api/posts` | 公共，`{commit,posts:[metadata]}`，仅已发布，日期倒序 |
-| GET | `/api/posts/:slug` | 公共，`{meta,markdown,format,author,article_id,assets:[{name,url}]}`，草稿及不存在均 404 |
+| GET | `/api/posts/:slug` | 公共，`{meta,markdown,format,author,article_id,entry,pages:[{name,url}],assets:[{name,url}]}`，草稿及不存在均 404 |
+| GET | `/api/posts/:slug/pages/:name` | 公共，指定页面的正文、元信息、格式、页面列表和资源地址；非公开或不存在均 404 |
 | GET | `/api/assets/:slug/:name` | 公共，仅已发布文章的已验证图片 |
 | GET | `/api/stats` | 公共，文章数、标签数、正文源字节数、启动以来文章请求数 |
 | POST | `/api/auth/register` | 公共 + Origin；`{username,password}`，创建 reader；可配置关闭 |
@@ -26,7 +27,7 @@
 | PUT | `/api/account/password` | 登录 + Origin + CSRF；`{old_password,new_password}`，成功后全部会话失效 |
 | GET | `/api/admin/users` | 管理员；返回用户启用状态、角色、前缀及公钥，不含哈希 |
 | PATCH | `/api/admin/users/:username` | 管理员 + Origin + CSRF；`{enabled,role}`；兼容可选的旧 `prefixes` 字段 |
-| GET | `/api/admin/status` | 管理员；`{commit,total_posts,drafts,indexed_commit}` |
+| GET | `/api/admin/status` | 管理员；`{commit,total_posts,drafts,indexed_commit,pending}` |
 
 ## 权限与账户
 
@@ -56,13 +57,16 @@
 
 ## 文章与资源
 
-- 文章以作者仓库的 `index.txt` 为登记依据，每行三列：`文章ID posts/文件夹 正文文件名`。
-- 站内 `:slug` 为 `作者名~文章ID`，例如 `alice~first`；索引 ID 不随文件夹或文件名变化。
-- `markdown` 保留现有正文源字段（含 Frontmatter）；`format` 为 `markdown` 或 `text`，纯文本不得当作 HTML 渲染。
-- 未登记内容及草稿不通过公共文章/资源接口返回；删除索引项会自动撤回阅读内容并同步删除派生数据库记录。
+文章由作者仓库的 `index.toml` 登记，结构、字段和多页样例见[文章发布](publishing.md)。站内 `:slug` 为 `作者名~文章ID`，目录或入口改名不会改变 ID。
 
-## 同步状态
+`GET /api/posts/:slug` 返回入口正文。`markdown` 是正文源文本，服务端不再把 Frontmatter 解析为元信息，`entry` 是入口文件名，`pages` 和 `assets` 提供该文章可达页面及已导入图片的 URL。`format` 为 `markdown` 或 `text`，阅读端不得将纯文本直接当作 HTML。
 
-- `/api/admin/status` 的 `commit` 和 `indexed_commit` 为整个作者集合的版本摘要，不是单个作者的 Git HEAD。
-- 作者各自的源提交记录在数据库 `blog_articles.git_commit` 和私有集合快照中。
-- 数据库失败时 Git 接收与阅读仍可继续，索引在恢复后自动重建；站长审核暂未启用。
+`meta` 包含 `title/description/tags/cover/slug/author/created_at/date/updated/status`。`cover` 是文件名或 null，对应 `assets` 中的资源。`author` 由服务端认证身份填写；`created_at` 是首次导入时间，`date` 是首次公开时间，未公开时为空字符串；`updated` 是元信息、可达页面或有效图片实际变化的时间。时间使用 UTC RFC 3339 字符串，不接受作者在索引或 Git 提交中指定。
+
+页面链接如 `chapter.md#part` 由阅读端根据 `pages` 映射到页面 URL，并保留锚点。非公开内容、未登记目录、未链接页面与未引用图片不会由公共接口返回。移除索引条目或入口缺失时，页面和资源入口同时撤回。
+
+## 同步与暂存状态
+
+`/api/admin/status` 的 `commit` 和 `indexed_commit` 为整个生效作者集合的版本摘要，不是单个作者的 Git HEAD。`pending` 的格式为 `{作者名: {commit, reason}}`，仅管理员可读。TOML 无效时保留原生效版本及其数据库记录，暂存状态跨进程重启保存；修复后的正常推送会替换暂存状态并重新导入。
+
+作者的源提交记录在数据库 `blog_articles.git_commit` 和私有集合快照中。数据库失败时 Git 接收与已导入文章阅读仍可继续，恢复后自动重建。站长审核暂未启用。

@@ -102,6 +102,7 @@ async fn page(
         .pages
         .get(&name)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "页面不存在".into()))?;
+    app.views.fetch_add(1, Ordering::Relaxed);
     Ok(Json(
         json!({"meta":post.meta,"name":name,"markdown":text,"format":if name.ends_with(".txt") { "text" } else { "markdown" },
         "pages":post.pages.keys().map(|page| json!({"name":page,"url":format!("/api/posts/{key}/pages/{page}")})).collect::<Vec<_>>(),

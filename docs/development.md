@@ -55,16 +55,20 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
+前端开发和构建见 [Astro 前端](frontend.md)。
+
 ## 联调
 
 ```sh
 python3 scripts/prepare-deploy.py --build-database
 python3 scripts/smoke.py
 python3 scripts/smoke.py --key-type rsa
+# 安装 Python Playwright 和 Chromium 后，可追加前端真实浏览器验证。
+python3 scripts/smoke.py --key-type rsa --browser-test
 ```
 
 - 联调使用独立随机命名的 Compose 项目、本机 18080/18443/12222 端口，测试结束清理自己创建的容器与卷。
-- 覆盖真实 SSH 身份与授权、作者间 Git 对象隔离、非法推送、索引删除、ChuSQL 元信息创建/删除、发布撤回、断库阅读、重启与撤权。
+- 覆盖真实 SSH 身份与授权、作者间 Git 对象隔离、非法推送、TOML 暂存与修复、多页链接、系统时间、索引删除、ChuSQL 元信息创建/删除、发布撤回、断库阅读、重启与撤权。
 - 该测试会拉取基础镜像，需要 Docker 可用。
 
 ## 历史清理后的协作
