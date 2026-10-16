@@ -1,5 +1,5 @@
 use crate::accounts::{Grant, Role};
-use crate::content::{self, Snapshot};
+use crate::content::{self, Scan, Snapshot};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -44,16 +44,44 @@ fn authorized<'a>(cfg: &'a Config, identity: &str) -> Result<&'a Grant> {
         .get(identity)
         .filter(|p| p.enabled && p.role != Role::Reader && p.ssh_key.is_some())
         .context("服务器未授权此身份发布文章")?;
-    ensure!(
-        !publisher.prefixes.is_empty()
-            && publisher.prefixes.iter().all(|p| !p.is_empty()
-                && p.len() <= 64
-                && p.bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')),
-        "发布者必须拥有明确 slug 前缀"
-    );
     Ok(publisher)
 }
+pub fn author_repository(root: &Path, identity: &str) -> Result<PathBuf> {
+    ensure!(
+        (3..=32).contains(&identity.len())
+            && identity.starts_with(|c: char| c.is_ascii_lowercase())
+            && identity
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+        "作者仓库身份无效"
+    );
+    Ok(root.join(format!("{identity}.git")))
+}
+
+pub async fn init_author(root: &Path, identity: &str) -> Result<PathBuf> {
+    let repo = author_repository(root, identity)?;
+    if !repo.exists() {
+        tokio::fs::create_dir(&repo).await?;
+        content::git(
+            &repo,
+            &[
+                "init",
+                "--bare",
+                "--initial-branch=main",
+                "--shared=group",
+                ".",
+            ],
+            None,
+        )
+        .await?;
+    }
+    ensure!(
+        std::fs::symlink_metadata(&repo)?.is_dir(),
+        "作者仓库必须是普通目录"
+    );
+    Ok(repo)
+}
+
 fn directory_size(path: &Path) -> Result<u64> {
     let mut total = 0u64;
     for entry in std::fs::read_dir(path)? {
@@ -88,20 +116,22 @@ pub async fn gate(identity: &str) -> Result<()> {
         "仅允许对 content.git 执行 Git 推送或读取"
     );
     let receiving = original.starts_with("git-receive-pack");
-    directory_size(&cfg.repository)?;
+    let repo = author_repository(&cfg.repository, identity)?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(cfg.repository.join("ssh.lock"))?;
+        .open(cfg.repository.join(format!(".{identity}.lock")))?;
     fs2::FileExt::try_lock_exclusive(&lock).context("另一位发布者正在访问仓库，请稍后重试")?;
+    init_author(&cfg.repository, identity).await?;
+    directory_size(&cfg.repository)?;
     let executable = if receiving {
         "git-receive-pack"
     } else {
         "git-upload-pack"
     };
     let mut child = Command::new(executable)
-        .arg(&cfg.repository)
+        .arg(&repo)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", "/nonexistent")
@@ -138,12 +168,7 @@ pub async fn gate(identity: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn validate_change(
-    repo: &Path,
-    previous: &str,
-    next: &str,
-    publisher: &Grant,
-) -> Result<Snapshot> {
+pub async fn validate_change(repo: &Path, previous: &str, next: &str) -> Result<Scan> {
     ensure!(
         next.len() == 40
             && next.bytes().all(|b| b.is_ascii_hexdigit())
@@ -158,36 +183,6 @@ pub async fn validate_change(
         "每次只允许推送一个直接继承主分支的提交，首次必须为根提交；不允许合并或强推"
     );
     let snapshot = content::scan_at(repo, next).await?;
-    // Authorize raw Git paths: normalization must not hide edits to another author's bytes.
-    let changes = if initial {
-        content::git(repo, &["ls-tree", "--name-only", "-rz", next], None).await?
-    } else {
-        content::git(
-            repo,
-            &[
-                "diff-tree",
-                "--no-commit-id",
-                "--name-only",
-                "--no-renames",
-                "-r",
-                "-z",
-                previous,
-                next,
-            ],
-            None,
-        )
-        .await?
-    };
-    for path in changes.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-        let path = std::str::from_utf8(path)?;
-        let parts: Vec<_> = path.split('/').collect();
-        ensure!(parts.len() == 3 && parts[0] == "posts", "修改路径无效");
-        let key = content::slug(parts[1])?;
-        ensure!(
-            publisher.prefixes.iter().any(|p| key.starts_with(p)),
-            "无权修改文章 {key}"
-        );
-    }
     Ok(snapshot)
 }
 
@@ -214,7 +209,15 @@ pub async fn pre_receive() -> Result<()> {
         fields[0].len() == 40 && fields[0].bytes().all(|b| b.is_ascii_hexdigit()),
         "旧提交无效"
     );
-    validate_change(&cfg.repository, fields[0], fields[1], publisher).await?;
+    let repo = author_repository(&cfg.repository, &identity)?;
+    let actual = std::env::current_dir()?;
+    ensure!(
+        std::fs::canonicalize(&repo)? == std::fs::canonicalize(actual)?,
+        "推送仓库与作者身份不符"
+    );
+    if let Scan::Pending(reason) = validate_change(&repo, fields[0], fields[1]).await? {
+        eprintln!("ChuBlog: index.toml 待修复，提交已暂存，现有文章不变：{reason}");
+    }
     let latest = config(&config_path)?;
     let current = authorized(&latest, &identity)?;
     ensure!(
@@ -228,34 +231,131 @@ pub async fn pre_receive() -> Result<()> {
     Ok(())
 }
 
-// Fetch into API-owned storage: the SSH account cannot alter published refs or snapshots.
-pub async fn import(repo: &Path, source: &Path, current: &Snapshot) -> Result<Snapshot> {
-    content::git(
-        repo,
-        &[
-            "fetch",
-            "--no-tags",
-            "--no-recurse-submodules",
-            "--",
-            source.to_str().context("接收路径无效")?,
-            "refs/heads/main",
-        ],
-        None,
-    )
-    .await?;
-    let commit = String::from_utf8(content::git(repo, &["rev-parse", "FETCH_HEAD"], None).await?)?;
-    let commit = commit.trim();
-    if commit == current.commit {
-        return Ok(current.clone());
+// Each fetch receives only one author's objects into an API-owned private cache.
+pub async fn import_authors(
+    data: &Path,
+    source: &Path,
+    current: &Snapshot,
+    identities: &[String],
+) -> Result<Snapshot> {
+    let cache = data.join("authors");
+    tokio::fs::create_dir_all(&cache).await?;
+    let mut combined = current.clone();
+    for identity in identities {
+        let incoming = author_repository(source, identity)?;
+        if !incoming.exists() {
+            continue;
+        }
+        ensure!(
+            std::fs::symlink_metadata(&incoming)?.is_dir(),
+            "接收仓库不是普通目录"
+        );
+        let result = async {
+            let author_data = cache.join(identity);
+            let repo = content::init(&author_data).await?;
+            let safe = format!("safe.directory={}", incoming.display());
+            // The initial bare repository may have no main branch until its first push.
+            let refs = content::git(
+                &repo,
+                &[
+                    "-c",
+                    &safe,
+                    "ls-remote",
+                    incoming.to_str().context("接收路径无效")?,
+                    "refs/heads/main",
+                ],
+                None,
+            )
+            .await?;
+            if refs.is_empty() {
+                return Ok::<_, anyhow::Error>(None);
+            }
+            content::git(
+                &repo,
+                &[
+                    "-c",
+                    &safe,
+                    "fetch",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--",
+                    incoming.to_str().context("接收路径无效")?,
+                    "refs/heads/main",
+                ],
+                None,
+            )
+            .await?;
+            let commit =
+                String::from_utf8(content::git(&repo, &["rev-parse", "FETCH_HEAD"], None).await?)?;
+            let commit = commit.trim();
+            if current
+                .revisions
+                .get(identity)
+                .is_some_and(|previous| previous == commit)
+                || current
+                    .pending
+                    .get(identity)
+                    .is_some_and(|pending| pending.commit == commit)
+            {
+                return Ok(None);
+            }
+            let snapshot = content::scan_at(&repo, commit).await?;
+            content::git(&repo, &["update-ref", "refs/heads/main", commit], None).await?;
+            Ok(Some((commit.to_owned(), snapshot)))
+        }
+        .await;
+        match result {
+            Ok(Some((commit, Scan::Pending(reason)))) => {
+                combined
+                    .pending
+                    .insert(identity.clone(), content::PendingIndex { commit, reason });
+            }
+            Ok(Some((_, Scan::Ready(snapshot)))) => {
+                let mut candidate = combined.clone();
+                candidate.posts.retain(|_, post| post.author != *identity);
+                for (id, mut post) in snapshot.posts {
+                    post.author = identity.clone();
+                    // Neither username nor local ID allows '~', so this is collision-free.
+                    let key = format!("{identity}~{id}");
+                    post.meta.slug = key.clone();
+                    let now =
+                        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                    content::stamp(&mut post, combined.posts.get(&key), &now);
+                    candidate.posts.insert(key, post);
+                }
+                let bytes: usize = candidate
+                    .posts
+                    .values()
+                    .map(|p| {
+                        p.markdown.len()
+                            + p.assets.iter().map(|a| a.data.len() * 3 / 4).sum::<usize>()
+                    })
+                    .sum();
+                if candidate.posts.len() > 1000 || bytes > content::MAX_SNAPSHOT {
+                    tracing::warn!(action = "author_import_pending", author = %identity, "站点文章数量或容量超过上限");
+                    continue;
+                }
+                candidate
+                    .revisions
+                    .insert(identity.clone(), snapshot.commit);
+                candidate.pending.remove(identity);
+                combined = candidate;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(action = "author_import_pending", author = %identity, error = %error)
+            }
+        }
     }
-    let snapshot = content::scan_at(repo, commit).await?;
-    content::git(
-        repo,
-        &["update-ref", "refs/heads/main", commit, &current.commit],
-        None,
+    let repo = content::init(data).await?;
+    let digest = content::git(
+        &repo,
+        &["hash-object", "--stdin"],
+        Some(&serde_json::to_vec(&combined.revisions)?),
     )
     .await?;
-    Ok(snapshot)
+    combined.commit = String::from_utf8(digest)?.trim().into();
+    Ok(combined)
 }
 
 pub fn authorized_keys() -> Result<()> {

@@ -45,6 +45,30 @@ pub async fn rebuild(snapshot: &Snapshot) -> Result<()> {
         db.query("CREATE TABLE blog_tags (slug TEXT, tag TEXT, git_commit TEXT)")
             .await?;
     }
+    if db
+        .query("SELECT id FROM blog_articles LIMIT 1")
+        .await
+        .is_err()
+    {
+        db.query("CREATE TABLE blog_articles (id TEXT PRIMARY KEY, author TEXT, article_id TEXT, title TEXT, description TEXT, status TEXT, published_at TEXT, updated_at TEXT, path TEXT, format TEXT, git_commit TEXT)").await?;
+    }
+    db.query("BEGIN").await?;
+    db.query("DELETE FROM blog_articles").await?;
+    for post in snapshot.posts.values() {
+        let meta = &post.meta;
+        let status = match meta.status {
+            Status::Draft => "draft",
+            Status::Published => "published",
+        };
+        let q = Query::new("INSERT INTO blog_articles (id, author, article_id, title, description, status, published_at, updated_at, path, format, git_commit) VALUES (")
+            .bind(meta.slug.as_str()).push(", ").bind(post.author.as_str()).push(", ")
+            .bind(post.article_id.as_str()).push(", ").bind(meta.title.as_str()).push(", ")
+            .bind(meta.description.as_str()).push(", ").bind(status).push(", ")
+            .bind(meta.date.as_str()).push(", ").bind(meta.updated.as_str()).push(", ")
+            .bind(post.path.as_str()).push(", ").bind(post.format.as_str()).push(", ")
+            .bind(post.git_commit.as_str()).push(")");
+        db.query(q.as_str()).await?;
+    }
     db.query("DELETE FROM blog_tags").await?;
     db.query("DELETE FROM blog_posts").await?;
     for post in snapshot
@@ -56,7 +80,7 @@ pub async fn rebuild(snapshot: &Snapshot) -> Result<()> {
         let q = Query::new("INSERT INTO blog_posts (slug, title, description, published_at, updated_at, path, git_commit) VALUES (")
             .bind(meta.slug.as_str()).push(", ").bind(meta.title.as_str()).push(", ")
             .bind(meta.description.as_str()).push(", ").bind(meta.date.as_str()).push(", ")
-            .bind(meta.updated.as_str()).push(", ").bind(format!("posts/{}/index.md", meta.slug).as_str())
+            .bind(meta.updated.as_str()).push(", ").bind(post.path.as_str())
             .push(", ").bind(snapshot.commit.as_str()).push(")");
         db.query(q.as_str()).await?;
         for tag in &meta.tags {
@@ -70,6 +94,7 @@ pub async fn rebuild(snapshot: &Snapshot) -> Result<()> {
             db.query(q.as_str()).await?;
         }
     }
+    db.query("COMMIT").await?;
     db.close().await;
     Ok(())
 }
@@ -131,7 +156,23 @@ pub async fn consistent(snapshot: &Snapshot) -> Result<bool> {
         .filter(|p| p.meta.status == Status::Published)
         .map(|p| p.meta.tags.len())
         .sum::<usize>() as u64;
-    let matches = !result.truncated
+    let articles = db
+        .query("SELECT id, git_commit FROM blog_articles LIMIT 1000")
+        .await?;
+    let expected_articles: std::collections::BTreeSet<_> = snapshot
+        .posts
+        .values()
+        .map(|p| (p.meta.slug.as_str(), p.git_commit.as_str()))
+        .collect();
+    let actual_articles: std::collections::BTreeSet<_> = articles
+        .rows
+        .iter()
+        .filter_map(|row| Some((row.first()?.as_str()?, row.get(1)?.as_str()?)))
+        .collect();
+    let matches = !articles.truncated
+        && articles.rows.len() == expected_articles.len()
+        && actual_articles == expected_articles
+        && !result.truncated
         && result.rows.len() == expected.len()
         && actual == expected
         && count

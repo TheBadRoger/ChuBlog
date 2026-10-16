@@ -85,7 +85,27 @@ async fn public_post(
     // Relaxed is sufficient: this independent counter does not synchronize other state.
     app.views.fetch_add(1, Ordering::Relaxed);
     Ok(Json(
-        json!({"meta": post.meta, "markdown": post.markdown, "assets": post.assets.iter().map(|a| json!({"name": a.name, "url": format!("/api/assets/{key}/{}", a.name)})).collect::<Vec<_>>()}),
+        json!({"meta": post.meta, "markdown": post.markdown, "format": post.format, "author": post.author, "article_id": post.article_id, "entry": post.entry, "pages": post.pages.keys().map(|name| json!({"name":name,"url":format!("/api/posts/{key}/pages/{name}")})).collect::<Vec<_>>(), "assets": post.assets.iter().map(|a| json!({"name": a.name, "url": format!("/api/assets/{key}/{}", a.name)})).collect::<Vec<_>>()}),
+    ))
+}
+async fn page(
+    State(app): State<Arc<App>>,
+    Path((key, name)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    let snapshot = app.snapshot.read().await;
+    let post = snapshot
+        .posts
+        .get(&key)
+        .filter(|p| p.meta.status == Status::Published)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "文章不存在".into()))?;
+    let text = post
+        .pages
+        .get(&name)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "页面不存在".into()))?;
+    Ok(Json(
+        json!({"meta":post.meta,"name":name,"markdown":text,"format":if name.ends_with(".txt") { "text" } else { "markdown" },
+        "pages":post.pages.keys().map(|page| json!({"name":page,"url":format!("/api/posts/{key}/pages/{page}")})).collect::<Vec<_>>(),
+        "assets":post.assets.iter().map(|a| json!({"name":a.name,"url":format!("/api/assets/{key}/{}",a.name)})).collect::<Vec<_>>() }),
     ))
 }
 async fn asset(
@@ -132,7 +152,7 @@ async fn admin_status(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiRes
     accounts::authorize(&app, &headers, false, true).await?;
     let snapshot = app.snapshot.read().await;
     Ok(Json(
-        json!({"commit": snapshot.commit, "total_posts": snapshot.posts.len(), "drafts": snapshot.posts.values().filter(|p| p.meta.status == Status::Draft).count(), "indexed_commit": *app.indexed.read().await}),
+        json!({"commit": snapshot.commit, "total_posts": snapshot.posts.len(), "drafts": snapshot.posts.values().filter(|p| p.meta.status == Status::Draft).count(), "indexed_commit": *app.indexed.read().await, "pending": snapshot.pending}),
     ))
 }
 async fn sync_index(app: &App, snapshot: &Snapshot) {
@@ -153,6 +173,7 @@ fn router(app: Arc<App>) -> Router {
         )
         .route("/api/posts", get(posts))
         .route("/api/posts/{slug}", get(public_post))
+        .route("/api/posts/{slug}/pages/{name}", get(page))
         .route("/api/assets/{slug}/{name}", get(asset))
         .route("/api/stats", get(stats))
         .route("/api/auth/register", post(accounts::register))
@@ -186,19 +207,32 @@ fn router(app: Arc<App>) -> Router {
         ))
         .with_state(app)
 }
-async fn refresh(app: &App, repo: &std::path::Path, source: &std::path::Path) -> Result<()> {
-    // Recover a previously committed ref even if snapshot publication was interrupted.
-    let mut current = app.snapshot.read().await.clone();
-    let head =
-        String::from_utf8(content::git(repo, &["rev-parse", "refs/heads/main"], None).await?)?;
-    if current.commit != head.trim() {
-        current = content::scan(repo).await?;
-    }
-    let snapshot = ssh::import(repo, source, &current).await?;
-    if snapshot.commit != app.snapshot.read().await.commit {
+async fn refresh(app: &App, source: &std::path::Path) -> Result<()> {
+    let current = app.snapshot.read().await.clone();
+    let identities: Vec<_> = app
+        .accounts
+        .lock()
+        .await
+        .grants
+        .publishers
+        .keys()
+        .cloned()
+        .collect();
+    let snapshot = ssh::import_authors(&app.data, source, &current, &identities).await?;
+    if snapshot.commit != current.commit || snapshot.pending != current.pending {
+        accounts::atomic(
+            &app.data.join("collection.json"),
+            &serde_json::to_vec(&snapshot)?,
+            0o600,
+        )
+        .await?;
         content::persist(&app.data, &snapshot).await?;
-        info!(action = "published", commit = %snapshot.commit);
+        info!(action = "published", revision = %snapshot.commit);
+        let changed = snapshot.commit != current.commit;
         *app.snapshot.write().await = snapshot;
+        if changed {
+            *app.indexed.write().await = None;
+        }
     }
     Ok(())
 }
@@ -238,7 +272,21 @@ async fn main() -> Result<()> {
         .open(data.join("writer.lock"))?;
     fs2::FileExt::try_lock_exclusive(&lock_file).context("内容目录已被另一个 API 进程使用")?;
     let repo = content::init(&data).await?;
-    let snapshot = content::scan(&repo).await?;
+    let snapshot = match tokio::fs::read(data.join("collection.json")).await {
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).context("文章集合快照损坏，请从私有作者仓库恢复")?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ensure!(
+                content::git(&repo, &["ls-tree", "-r", "--name-only", "HEAD"], None)
+                    .await?
+                    .is_empty(),
+                "检测到旧共享文章仓库，请先按 README 迁移到作者独立仓库"
+            );
+            Snapshot::default()
+        }
+        Err(error) => return Err(error.into()),
+    };
     content::persist(&data, &snapshot).await?;
     if command.as_deref() == Some("rebuild-index") {
         index::rebuild(&snapshot).await?;
@@ -263,9 +311,9 @@ async fn main() -> Result<()> {
         "PUBLIC_ORIGIN 必须为不带末尾斜杠的站点 origin"
     );
     let source = PathBuf::from(
-        std::env::var("INGRESS_REPO").unwrap_or_else(|_| "/srv/ingress/content.git".into()),
+        std::env::var("INGRESS_DIR").unwrap_or_else(|_| "/srv/ingress/authors".into()),
     );
-    ensure!(source.is_absolute(), "INGRESS_REPO 必须是绝对路径");
+    ensure!(source.is_absolute(), "INGRESS_DIR 必须是绝对路径");
     let ssh_config = PathBuf::from(
         std::env::var("CHUBLOG_SSH_CONFIG")
             .unwrap_or_else(|_| data.join("publishers.json").to_string_lossy().into_owned()),
@@ -273,7 +321,7 @@ async fn main() -> Result<()> {
     let accounts = accounts::load(&data, &ssh_config, source.clone()).await?;
     ensure!(
         accounts.grants.repository == source,
-        "授权配置仓库与 INGRESS_REPO 不一致"
+        "授权配置仍指向旧共享仓库或与 INGRESS_DIR 不一致，请先按 README 迁移授权配置"
     );
     let app = Arc::new(App {
         data,
@@ -290,11 +338,14 @@ async fn main() -> Result<()> {
     let worker_app = app.clone();
     let worker = tokio::spawn(async move {
         let mut ticks = 0;
+        let mut retry_at = tokio::time::Instant::now();
         loop {
-            if let Err(error) = refresh(&worker_app, &repo, &source).await {
+            if let Err(error) = refresh(&worker_app, &source).await {
                 warn!(action = "import_pending", error = %error);
             }
-            if ticks % 30 == 0 {
+            if (ticks % 30 == 0 || worker_app.indexed.read().await.is_none())
+                && tokio::time::Instant::now() >= retry_at
+            {
                 let snapshot = worker_app.snapshot.read().await.clone();
                 if worker_app.indexed.read().await.as_deref() != Some(snapshot.commit.as_str()) {
                     sync_index(&worker_app, &snapshot).await;
@@ -305,6 +356,9 @@ async fn main() -> Result<()> {
                 ) {
                     *worker_app.indexed.write().await = None;
                     sync_index(&worker_app, &snapshot).await;
+                }
+                if worker_app.indexed.read().await.is_none() {
+                    retry_at = tokio::time::Instant::now() + Duration::from_secs(30);
                 }
             }
             ticks += 1;

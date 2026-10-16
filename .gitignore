@@ -9,3 +9,4 @@ dist/
 /deploy/secrets/
 __pycache__/
 *.pyc
+external

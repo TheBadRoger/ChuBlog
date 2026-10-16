@@ -72,6 +72,25 @@ with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
     envfile.chmod(0o600)
     project = 'chublog-test-' + secrets.token_hex(4)
     compose = ['docker', 'compose', '--env-file', str(envfile), '-p', project, '-f', str(ROOT / 'deploy/compose.yaml')]
+    def database_articles():
+        # Query the private DB from inside its container; no host database port is opened.
+        probe = r'''set -eu
+exec 3<>/dev/tcp/127.0.0.1/7777
+printf '%s\n' '{"method":"hello","protocol":1}' >&3
+read -r reply <&3
+printf '%s\n' "{\"method\":\"login\",\"user\":\"root\",\"password\":\"${CHUSQL_ROOT_PASSWORD}\"}" >&3
+read -r reply <&3
+printf '%s\n' '{"method":"query","sql":"USE chublog"}' >&3
+read -r reply <&3
+printf '%s\n' '{"method":"query","sql":"SELECT id, author, article_id, path FROM blog_articles"}' >&3
+read -r reply <&3
+printf '%s\n' "$reply"
+'''
+        result = run(compose + ['exec', '-T', 'db', 'bash', '-c', probe], capture_output=True)
+        response = json.loads(result.stdout)
+        assert response['status'] == 'result', response
+        return response['rows']
+
     try:
         run(compose + ['up', '-d', '--build'])
         admin = Client()
@@ -95,6 +114,8 @@ with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
         article.parent.mkdir(parents=True)
         original = (ROOT / 'content/posts/welcome/index.md').read_text().replace('slug: "welcome"', 'slug: "alice-first"')
         article.write_text(original)
+        manifest = local / 'index.txt'
+        manifest.write_text('alice-first posts/alice-first index.md\n')
 
         def commit():
             run(['git', '-C', str(local), 'add', '.'])
@@ -109,23 +130,26 @@ with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
         push(False)
         admin.call('PATCH', '/api/admin/users/alice', {'enabled': True, 'role': 'publisher', 'prefixes': ['alice-']})
         push()
-        wait_for(lambda: Client().call('GET', '/api/posts/alice-first')['meta']['slug'] == 'alice-first')
+        wait_for(lambda: Client().call('GET', '/api/posts/alice~alice-first')['meta']['slug'] == 'alice~alice-first')
         wait_for(lambda: (lambda s: s['indexed_commit'] == s['commit'])(admin.call('GET', '/api/admin/status')), timeout=120)
-        print('PASS: registration, independent grant, real SSH push, publication, real ChuSQL index')
+        assert database_articles() == [['alice~alice-first', 'alice', 'alice-first', 'posts/alice-first/index.md']]
+        print('PASS: registration, independent grant, real SSH push, publication, real ChuSQL metadata')
         ssh = ['ssh', '-i', str(tmp / 'key'), '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', f'UserKnownHostsFile={tmp / "known_hosts"}', '-p', '12222', 'git@localhost']
         result = subprocess.run(ssh + ['id'], capture_output=True)
         assert result.returncode != 0, 'SSH shell command unexpectedly succeeded'
         # Invalid commits must not advance the remote branch. Reset only this disposable local test clone.
-        for kind in ['script', 'symlink', 'foreign', 'oversize', 'pack']:
+        for kind in ['script', 'symlink', 'manifest', 'certificate', 'gitignore', 'oversize', 'pack']:
             if kind == 'script':
                 article.write_text(original + '\n<script>alert(1)</script>\n')
             elif kind == 'symlink':
                 article.unlink()
                 article.symlink_to('/etc/passwd')
-            elif kind == 'foreign':
-                other = local / 'posts/bob-first/index.md'
-                other.parent.mkdir(parents=True)
-                other.write_text(original.replace('alice-first', 'bob-first'))
+            elif kind == 'manifest':
+                manifest.write_text('alice-first posts/missing index.md\n')
+            elif kind == 'certificate':
+                (article.parent / 'certificate.txt').write_text('-----BEGIN CERTIFICATE-----\ninvalid\n')
+            elif kind == 'gitignore':
+                (local / '.gitignore').write_text('*.pem\n')
             elif kind == 'oversize':
                 article.write_text(original + 'x' * (257 * 1024))
             else:
@@ -135,20 +159,48 @@ with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
             run(['git', '-C', str(local), 'reset', '--hard', 'origin/main'], capture_output=True)
         push(False, 'main:refs/heads/other')
         push(False, '--delete', 'main')
-        print('PASS: arbitrary command, HTML, symlink, other-author edit, oversized article, extra branch and branch deletion rejected')
+        print('PASS: arbitrary command, HTML, symlink, invalid index, disguised certificate, gitignore, oversize, branch and deletion rejected')
+        # A second authorized key maps the same remote alias to a separate object store.
+        bob = Client()
+        bob.call('POST', '/api/auth/register', {'username': 'bob', 'password': password})
+        bob.csrf = bob.call('POST', '/api/auth/login', {'username': 'bob', 'password': password})['csrf']
+        run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(tmp / 'bob-key')])
+        bob.call('PUT', '/api/account/ssh-key', {'public_key': (tmp / 'bob-key.pub').read_text().strip()})
+        admin.call('PATCH', '/api/admin/users/bob', {'enabled': True, 'role': 'publisher'})
+        bob_env = env.copy()
+        bob_env['GIT_SSH_COMMAND'] = env['GIT_SSH_COMMAND'].replace(str(tmp / 'key'), str(tmp / 'bob-key'))
+        bob_local = tmp / 'bob-articles'
+        run(['git', 'clone', 'git@localhost:content.git', str(bob_local)], env=bob_env, capture_output=True)
+        assert not (bob_local / 'posts/alice-first/index.md').exists(), 'Alice content leaked into Bob clone'
+        alice_commit = run(['git', '-C', str(local), 'rev-parse', 'HEAD'], capture_output=True).stdout.strip()
+        result = subprocess.run(['git', '-C', str(bob_local), 'fetch', 'origin', alice_commit], env=bob_env, capture_output=True)
+        assert result.returncode != 0, 'Bob fetched Alice commit by hash'
+        result = subprocess.run(['git', 'ls-remote', 'git@localhost:alice.git'], env=bob_env, capture_output=True)
+        assert result.returncode != 0, 'Bob selected another repository path'
+        print('PASS: separate author clone, inaccessible foreign commit and forbidden repository selection')
+        # Removing only an index entry deletes the live article, while retaining its files.
+        manifest.write_text('')
+        commit()
+        push()
+        wait_for(lambda: Client().call('GET', '/api/stats')['published_posts'] == 0)
+        wait_for(lambda: (lambda s: s['indexed_commit'] == s['commit'])(admin.call('GET', '/api/admin/status')), timeout=120)
+        Client().call('GET', '/api/posts/alice~alice-first', expected=404)
+        assert database_articles() == [], 'Index removal did not delete database metadata'
+        print('PASS: index-only deletion removes HTTP article and database metadata')
+        manifest.write_text('alice-first posts/alice-first index.md\n')
         article.write_text(original.replace('status: "published"', 'status: "draft"'))
         commit()
         push()
         wait_for(lambda: Client().call('GET', '/api/stats')['published_posts'] == 0)
-        Client().call('GET', '/api/posts/alice-first', expected=404)
+        Client().call('GET', '/api/posts/alice~alice-first', expected=404)
         article.write_text(original)
         commit()
         push()
         wait_for(lambda: Client().call('GET', '/api/stats')['published_posts'] == 1)
         run(compose + ['stop', 'db'])
-        assert Client().call('GET', '/api/posts/alice-first')['meta']['slug'] == 'alice-first'
+        assert Client().call('GET', '/api/posts/alice~alice-first')['meta']['slug'] == 'alice~alice-first'
         run(compose + ['restart', 'api'])
-        wait_for(lambda: Client().call('GET', '/api/posts/alice-first')['meta']['slug'] == 'alice-first')
+        wait_for(lambda: Client().call('GET', '/api/posts/alice~alice-first')['meta']['slug'] == 'alice~alice-first')
         admin.csrf = admin.call('POST', '/api/auth/login', {'username': 'admin', 'password': password})['csrf']
         admin.call('PATCH', '/api/admin/users/alice', {'enabled': True, 'role': 'reader', 'prefixes': []})
         article.write_text(original + '\nRevoked publisher\n')
