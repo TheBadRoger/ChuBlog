@@ -118,38 +118,6 @@ fn require(condition: bool, message: &'static str) -> anyhow::Result<()> {
 fn now() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
-fn master_insert(name: &str, nickname: &str, hash: &str) -> Query {
-    Query::new("INSERT INTO blog_users (username, nickname, password_hash, created_at, permission_level) VALUES (")
-        .bind(name).push(", ").bind(nickname).push(", ").bind(hash)
-        .push(", ").bind(now().as_str()).push(", 'MASTER')")
-}
-
-// The deployment probe uses only synthetic values, so its full database error is safe to report.
-pub async fn verify_empty_install(db: &Client) -> anyhow::Result<()> {
-    db.query("BEGIN").await?;
-    let result = async {
-        for table in ["blog_users", "blog_site"] {
-            let count = db.query(&format!("SELECT count(*) FROM {table}")).await?;
-            if count.rows.first().and_then(|row| row.first()).and_then(Value::as_u64) != Some(0) {
-                return Ok(());
-            }
-        }
-        let query = master_insert("installationcheck", "安装检查", "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRmb3JjaGVjaw$YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU");
-        db.query(query.as_str()).await.context("安装预检：创建账户失败（使用固定检查数据）")?;
-        let result = db.query("SELECT id FROM blog_users WHERE username = 'installationcheck'").await?;
-        let id = result.rows.first().and_then(|row| row.first()).and_then(Value::as_i64)
-            .filter(|id| *id > 0).context("安装预检：账户 ID 应为正整数且自动生成")?;
-        let query = Query::new("INSERT INTO blog_site (id, name, description, master_user_id, installed_at) VALUES (1, 'installationcheck', '', ")
-            .bind(id).push(", ").bind(now().as_str()).push(")");
-        db.query(query.as_str()).await.context("安装预检：写入网站信息失败（使用固定检查数据）")?;
-        Ok::<(), anyhow::Error>(())
-    }.await;
-    let rollback = db.query("ROLLBACK").await.context("回滚安装预检失败");
-    result?;
-    rollback?;
-    Ok(())
-}
-
 async fn sql(db: &Client, query: &str) -> Result<QueryResult> {
     let operation = match query {
         q if q.starts_with("INSERT INTO blog_users ") => "create_account",
@@ -274,9 +242,9 @@ impl Store {
             .map(|row| decode(row).map_err(Error::from))
             .collect()
     }
-    pub async fn names(&self) -> Result<Vec<String>> {
+    pub async fn display_names(&self) -> Result<std::collections::BTreeMap<String, String>> {
         let db = self.database.connect().await?;
-        let result = sql(&db, "SELECT username FROM blog_users LIMIT 1001").await?;
+        let result = sql(&db, "SELECT username, nickname FROM blog_users LIMIT 1001").await?;
         db.close().await;
         require(
             !result.truncated && result.rows.len() <= 1000,
@@ -286,11 +254,12 @@ impl Store {
             .rows
             .iter()
             .map(|row| {
-                row.first()
+                let name = row
+                    .first()
                     .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .context("账户名称无效")
-                    .map_err(Error::from)
+                    .context("账户名称无效")?;
+                let nickname = row.get(1).and_then(Value::as_str).context("账户昵称无效")?;
+                Ok((name.to_owned(), nickname.to_owned()))
             })
             .collect()
     }
@@ -327,11 +296,11 @@ impl Store {
         db.close().await;
         require(
             !result.truncated && result.rows.len() <= 1,
-            "站长账户记录无效",
+            "管理员账户记录无效",
         )?;
         let user = result.rows.first().map(|row| decode(row)).transpose()?;
         if let Some(user) = &user {
-            require(user.level == Level::Master, "站长权限无效")?;
+            require(user.level == Level::Master, "管理员权限无效")?;
         }
         Ok(user)
     }
@@ -368,7 +337,8 @@ impl Store {
             let count = sql(&db, "SELECT count(*) FROM blog_users").await?;
             let count = count.rows.first().and_then(|row| row.first()).and_then(Value::as_u64).context("安装账户数量查询无效")?;
             if count != 0 { return Err(Error::InstallationConflict); }
-            let query = master_insert(name, nickname, hash);
+            let query = Query::new("INSERT INTO blog_users (username, nickname, password_hash, created_at, permission_level) VALUES (")
+                .bind(name).push(", ").bind(nickname).push(", ").bind(hash).push(", ").bind(now().as_str()).push(", 'MASTER')");
             sql(&db, query.as_str()).await?;
             let master = get(&db, name).await?.ok_or(Error::NotFound)?;
             let query = Query::new("INSERT INTO blog_site (id, name, description, master_user_id, installed_at) VALUES (1, ")

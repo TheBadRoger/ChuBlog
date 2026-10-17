@@ -46,10 +46,10 @@ python3 scripts/smoke.py --https --sources-env-file deploy/sources.public.env
 python3 scripts/smoke-deployment.py --sources-env-file deploy/sources.public.env
 ```
 
-联调使用临时项目与数据，覆盖安装、站长入库、Git 权限隔离、文章同步和故障恢复，结束后清理自身资源。网站使用本机 1741 端口，HTTPS 测试另用 18443 端口和临时 Caddy 私有 CA，并保持证书校验。
+联调使用临时项目与数据，覆盖安装、管理员入库、Git 权限隔离、文章同步和故障恢复，结束后清理自身资源。网站使用本机 1741 端口，HTTPS 测试另用 18443 端口和临时 Caddy 私有 CA，并保持证书校验。
 
 安装 Playwright 与 Chromium 后，`smoke.py --browser-test` 可追加页面检查，结合相同的源配置参数使用。
 
 ## 内置文章
 
-模板位于 `apps/api/starter/`，首次写入由 `apps/api/src/starter.rs` 完成。模板变更影响后续新安装，已有站点由站长通过 Git 更新文章。数据库字段与上游类型参考见[数据库文档](database.md)。
+模板位于 `apps/api/starter/`，首次写入由 `apps/api/src/starter.rs` 完成。模板变更影响后续新安装，已有站点由管理员通过 Git 更新文章。数据库字段与上游类型参考见[数据库文档](database.md)。

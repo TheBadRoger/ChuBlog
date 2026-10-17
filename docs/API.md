@@ -21,13 +21,13 @@
 | POST | `/api/auth/logout` | 登录 + Origin + CSRF，注销会话 |
 | GET | `/api/account` | 登录，返回用户信息、permissions 和 csrf |
 | PUT | `/api/account/password` | 登录 + Origin + CSRF；`{old_password,new_password}` |
-| GET | `/api/admin/users` | 站长，返回用户信息、enabled 和 role |
-| PATCH | `/api/admin/users/:username` | 站长 + Origin + CSRF；`{enabled,role}` |
-| GET | `/api/admin/status` | 站长，返回 `{commit,total_posts,drafts,indexed_commit,pending}` |
+| GET | `/api/admin/users` | 管理员，返回用户信息、enabled 和 role |
+| PATCH | `/api/admin/users/:username` | 管理员 + Origin + CSRF；`{enabled,role}` |
+| GET | `/api/admin/status` | 管理员，返回 `{commit,total_posts,drafts,indexed_commit,pending}` |
 
 ## 账户与权限
 
-用户信息包含 `id,username,nickname,created_at,last_login_at,permission_level`，密码哈希仅在数据库中保存。用户名为 3–32 位小写英文字母且唯一；昵称为 1–128 个 UTF-8 字节，可以重复，作为展示属性保存。登录、授权和仓库路径均使用用户名及用户 ID。密码为 12–1024 字节。
+用户信息包含 `id,username,nickname,created_at,last_login_at,permission_level`，密码哈希仅在数据库中保存。用户名为 3–32 位小写字母、数字、下划线或减号，首位为小写字母、下划线或减号且唯一；昵称为 1–128 个 UTF-8 字节，可以重复，作为展示属性保存。登录、授权和仓库路径均使用用户名及用户 ID。密码为 6–128 个 Unicode 字符。
 
 | permission_level | role / enabled | 权限 |
 | --- | --- | --- |
@@ -36,7 +36,7 @@
 | AUTHOR | publisher / true | 普通用户权限及个人仓库发布权 |
 | MASTER | admin / true | 作者权限、账户授权和同步状态查询 |
 
-安装创建唯一 MASTER，普通注册创建 MEMBER。授权接口维持站长唯一，并保留站长自身权限。账户和权限以 ChuSQL 为准，受保护请求及 Git Hook 均查询实时记录。
+安装创建唯一 MASTER，普通注册创建 MEMBER。授权接口维持管理员唯一，并保留管理员自身权限。账户和权限以 ChuSQL 为准，受保护请求及 Git Hook 均查询实时记录。
 
 会话使用随机 256 位令牌，Cookie 属性为 HttpOnly、SameSite=Strict，HTTPS 下附带 Secure。会话期限为一小时，进程重启、改密或撤权后失效；CSRF 保存在浏览器内存。注册开关由 `ALLOW_REGISTRATION` 控制。
 
@@ -44,13 +44,13 @@
 
 安装密钥的获取方法见[部署文档](deployment.md#首次安装网站)。网站名称为 1–120 字节，简介最多 1000 字节，两者去除两端空白并校验控制字符。
 
-安装事务创建真实站长账户及 `blog_site` 单例记录，完成后再次提交返回 409。响应包含 `starter_articles_pending`，为 true 时由后台继续准备内置文章。`owner` 返回站长用户名，首页据此生成文章链接。已有账户与安装状态冲突时返回 409。数据库故障按权限、凭据、结构、连接或数据校验分类提示；日志记录原因分类和操作阶段。
+安装事务创建真实管理员账户及 `blog_site` 单例记录，完成后再次提交返回 409。响应包含 `starter_articles_pending`，为 true 时由后台继续准备内置文章。`owner` 返回管理员用户名，首页据此生成文章链接。已有账户与安装状态冲突时返回 409。数据库故障按权限、凭据、结构、连接或数据校验分类提示；日志记录原因分类和操作阶段。
 
 ## 文章与同步
 
 `:slug` 为 `作者名~文章ID`。文章响应包含 `meta,markdown,format,entry,pages,assets,author,article_id`；页面响应另含页面名。`format` 为 markdown 或 text，pages 和 assets 提供名称与 URL。
 
-元数据包含 `title,description,tags,cover,slug,author,created_at,date,updated,status`。系统记录作者和 UTC RFC 3339 时间；date 为首次公开时间，草稿使用空字符串。cover 为图片名或 null。页面相对链接可映射为返回的 URL，并保留锚点。
+元数据包含 `title,description,tags,cover,slug,author,author_name,created_at,date,updated,status`。author 保留用户名身份，author_name 提供用于展示的数据库昵称。系统记录作者和 UTC RFC 3339 时间；date 为首次公开时间，草稿使用空字符串。cover 为图片名或 null。页面相对链接可映射为返回的 URL，并保留锚点。
 
 `commit` 和 `indexed_commit` 是全站生效集合摘要；`pending` 按作者返回 `{commit,reason}`。错误索引保留原发布版本，修复提交后继续同步。数据库故障时已导入文章继续从快照读取，身份与发布操作返回失败，恢复后自动重试。状态、时间和字段类型见[数据库文档](database.md)。
 

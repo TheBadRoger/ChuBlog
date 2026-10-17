@@ -9,19 +9,19 @@ const register = Astro.url.searchParams.get('mode') === 'register';
 <Base title={register ? '注册' : '登录'}>
   <div class="auth-shell">
     <header class="page-heading"><h1>{register ? '注册账户' : '登录'}</h1><p>{register ? '注册后可申请文章发布权限，使用账号密码通过 HTTPS Git 发布。' : '管理账户和文章发布权限。'}</p></header>
-    {Astro.url.searchParams.get('installed') === '1' && <p class="notice">安装完成，请使用刚创建的站长账户登录。</p>}
+    {Astro.url.searchParams.get('installed') === '1' && <p class="notice">安装完成，请使用刚创建的管理员账户登录。</p>}
     <nav class="auth-tabs" aria-label="账户入口"><a href="/login" aria-current={!register ? 'page' : undefined}>登录</a><a href="/login?mode=register" aria-current={register ? 'page' : undefined}>注册</a></nav>
     {Astro.url.searchParams.get('changed') === '1' && <p class="notice">密码已修改，请重新登录。</p>}
     {Astro.url.searchParams.get('registered') === '1' && <p class="notice">账户已创建，请登录。</p>}
     <form id="auth-form" data-mode={register ? 'register' : 'login'}>
       <label for="username">用户名</label>
-      <input id="username" name="username" spellcheck="false" autocapitalize="none" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z]{3,32}" aria-describedby={register ? 'username-help' : undefined} />
-      {register && <p class="field-help" id="username-help">3 至 32 位小写英文字母，作为唯一登录账号。</p>}
+      <input id="username" name="username" spellcheck="false" autocapitalize="none" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z_\x2d][a-z0-9_\x2d]{2,31}" aria-describedby={register ? 'username-help' : undefined} />
+      {register && <p class="field-help" id="username-help">3–32 位小写字母、数字、下划线或减号，首位为小写字母、下划线或减号，作为唯一登录账号。</p>}
       {register && <><label for="nickname">昵称</label><input id="nickname" name="nickname" autocomplete="nickname" required maxlength="128" aria-describedby="nickname-help" /><p class="field-help" id="nickname-help">1–128 个 UTF-8 字节，支持中文和表情，可以与其他人重复。</p></>}
       <label for="password">密码</label>
-      <input id="password" type="password" name="password" autocomplete={register ? 'new-password' : 'current-password'} required maxlength="1024" aria-describedby={register ? 'password-help' : undefined} />
+      <input id="password" type="password" name="password" autocomplete={register ? 'new-password' : 'current-password'} required minlength="6" maxlength="256" aria-describedby={register ? 'password-help' : undefined} />
       {register && <p class="field-help" id="password-help">至少 12 个字节，请使用较长且不重复的密码。</p>}
-      {register && <><label for="password-confirm">确认密码</label><input id="password-confirm" type="password" name="confirm" autocomplete="new-password" required maxlength="1024" /></>}
+      {register && <><label for="password-confirm">确认密码</label><input id="password-confirm" type="password" name="confirm" autocomplete="new-password" required minlength="6" maxlength="256" /></>}
       <p class="form-status" role="status" aria-live="polite"></p>
       <button class="button" type="submit">{register ? '创建账户' : '登录'}</button>
     </form>

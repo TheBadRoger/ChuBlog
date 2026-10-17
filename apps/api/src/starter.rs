@@ -23,14 +23,14 @@ pub async fn ensure(app: &App) -> Result<()> {
     let owner = store
         .owner()
         .await?
-        .context("安装记录没有有效的数据库站长账户")?;
+        .context("安装记录没有有效的数据库管理员账户")?;
     tokio::fs::create_dir_all(&app.repository).await?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(app.repository.join(format!(".{}.lock", owner.username)))?;
-    fs2::FileExt::try_lock_exclusive(&lock).context("站长仓库正在使用")?;
+    fs2::FileExt::try_lock_exclusive(&lock).context("管理员仓库正在使用")?;
     if !store.starters_pending().await? {
         return Ok(());
     }
@@ -71,7 +71,7 @@ async fn write_repository(repo: &Path, author: &str) -> Result<String> {
     // Recover a crash after update-ref but before the database completion record.
     if let Ok(head) = text(repo, &["rev-parse", "--verify", "refs/heads/main"], None).await {
         let current_tree = text(repo, &["rev-parse", "HEAD^{tree}"], None).await?;
-        ensure!(current_tree == tree, "站长仓库已有其他内容，拒绝覆盖");
+        ensure!(current_tree == tree, "管理员仓库已有其他内容，拒绝覆盖");
         return Ok(head);
     }
     let commit = String::from_utf8(

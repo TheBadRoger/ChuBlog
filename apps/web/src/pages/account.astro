@@ -1,26 +1,54 @@
 ---
 import Base from '../layouts/Base.astro';
+import { highlightCode } from '../lib/markdown';
 const host = Astro.request.headers.get('x-forwarded-host') || Astro.request.headers.get('host') || Astro.url.host;
 const scheme = Astro.request.headers.get('x-forwarded-proto') === 'https' ? 'https:' : Astro.url.protocol;
 const remote = `${scheme}//${host}/git/content.git`;
+const cloneCommand = `git clone ${remote} my-articles`;
+const publishCommands = `cd my-articles
+# 编辑 index.toml 和 posts/first/main.md
+git add index.toml posts/first
+git commit -m 'Publish article'
+git push -u origin main`;
+const indexExample = `[[articles]]
+id = "first"
+folder = "posts/first"
+title = "第一篇文章"
+description = "文章简介"
+tags = ["随笔"]
+public = true
+# entry = "main.md"`;
+
 ---
 <Base title="账户">
   <div class="account-shell">
     <header class="page-heading"><h1>账户</h1><p id="account-status" role="status">正在读取账户…</p></header>
     <div id="account-content" hidden>
-      <div class="account-identity"><div><strong id="account-name"></strong><span id="account-username" class="role-label"></span><span class="role-label" id="account-role"></span></div><button id="logout" class="button button-quiet" type="button">退出登录</button></div>
+      <div class="account-identity"><div><strong id="account-name"></strong><span class="role-label" id="account-role"></span></div><button id="logout" class="button button-quiet" type="button">退出登录</button></div>
       <section class="settings-section" aria-labelledby="publishing-heading">
-        <h2 id="publishing-heading">从本地发布文章</h2><p class="section-description">获得站长授权后，通过 HTTPS 克隆自己的文章仓库。Git 会提示输入网站用户名和密码；也可以通过系统凭据管理器保存。</p>
-        <p id="publish-status" class="section-description"></p>
-        <ol class="publishing-steps"><li><p>克隆个人仓库。同一个链接会按认证账号映射到各自独立的仓库。</p><pre><code>{`git clone ${remote} my-articles`}</code></pre></li><li><p>创建索引和正文，再提交推送。不要把密码写入仓库 URL。</p><pre><code>cd my-articles
-# 创建 index.toml 和 posts/first/main.md
-git add index.toml posts/first
-git commit -m 'Publish article'
-git push -u origin main</code></pre></li></ol>
-        <details><summary>查看 index.toml 示例</summary><pre><code>{`[[articles]]\nid = "first"\nfolder = "posts/first"\ntitle = "第一篇文章"\ndescription = "文章简介"\ntags = ["随笔"]\npublic = true\n# entry = "main.md"`}</code></pre><p class="field-help">作者和时间由系统生成。入口默认 main.md，正文不需要 Frontmatter。</p></details>
+        <h2 id="publishing-heading">从本地发布文章</h2>
+        <div class="prose publishing-guide">
+          <p>获得管理员授权后，你可以通过 HTTPS 克隆个人文章仓库。Git 会提示输入网站用户名和密码，系统凭据管理器可以保存登录凭据。</p>
+          <p id="publish-status"></p>
+          <ol>
+            <li>
+              <p>克隆个人仓库。同一个链接会根据认证账号连接到各自独立的仓库。密码通过 Git 的凭据提示窗口输入。</p>
+              <pre><code class="language-bash" set:html={highlightCode(cloneCommand, 'bash')} /></pre>
+            </li>
+            <li>
+              <p>进入仓库目录，在 <code>posts/first/main.md</code> 中编写正文，在仓库根目录创建 <code>index.toml</code>。完成编辑后，提交并推送。</p>
+              <pre><code class="language-bash" set:html={highlightCode(publishCommands, 'bash')} /></pre>
+            </li>
+          </ol>
+          <details>
+            <summary>查看 index.toml 示例</summary>
+            <pre><code class="language-toml" set:html={highlightCode(indexExample, 'toml')} /></pre>
+            <p>作者和时间由系统生成。入口文档默认为 <code>main.md</code>，正文使用普通 Markdown，文章元信息集中写在 <code>index.toml</code> 中。</p>
+          </details>
+        </div>
       </section>
-      <section class="settings-section" aria-labelledby="password-heading"><h2 id="password-heading">修改密码</h2><form id="password-form"><label for="old-password">原密码</label><input id="old-password" type="password" name="old_password" autocomplete="current-password" required maxlength="1024" /><label for="new-password">新密码</label><input id="new-password" type="password" name="new_password" autocomplete="new-password" required maxlength="1024" /><p class="form-status" role="status" aria-live="polite"></p><button class="button button-quiet" type="submit">修改密码</button></form></section>
-      <section id="admin-section" class="settings-section" aria-labelledby="admin-heading" hidden><h2 id="admin-heading">发布授权</h2><p class="section-description">公钥登记与发布授权分别检查。停用账户会同时撤销登录和发布权限。</p><p id="admin-status" class="form-status" role="status" aria-live="polite"></p><div id="admin-users" class="admin-users"></div><h3>暂存的索引</h3><div id="pending-indexes"></div></section>
+      <section class="settings-section" aria-labelledby="password-heading"><h2 id="password-heading">修改密码</h2><form id="password-form"><label for="old-password">原密码</label><input id="old-password" type="password" name="old_password" autocomplete="current-password" required minlength="6" maxlength="256" /><label for="new-password">新密码</label><input id="new-password" type="password" name="new_password" autocomplete="new-password" required minlength="6" maxlength="256" /><p class="form-status" role="status" aria-live="polite"></p><button class="button button-quiet" type="submit">修改密码</button></form></section>
+
     </div>
     <noscript><p class="notice">账户设置需要启用 JavaScript。</p></noscript>
   </div>

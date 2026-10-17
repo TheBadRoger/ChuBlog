@@ -1,10 +1,12 @@
 ---
 import '../styles/global.css';
 import { readApi, type SiteState } from '../lib/api';
-interface Props { title?: string; description?: string; home?: boolean }
+interface Props { title?: string; description?: string; home?: boolean; site?: SiteState['site'] }
 const { title, description, home = false } = Astro.props;
-let metadata: SiteState['site'] = null;
-try { metadata = (await readApi<SiteState>('/api/site')).site; } catch {}
+let metadata = Astro.props.site;
+if (metadata === undefined) {
+  try { metadata = (await readApi<SiteState>('/api/site')).site; } catch {}
+}
 const site = metadata?.name || 'ChuBlog';
 const pageDescription = description ?? metadata?.description ?? '文章与随笔。';
 const path = Astro.url.pathname;
@@ -15,22 +17,38 @@ const path = Astro.url.pathname;
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={pageDescription} />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
+    <script is:inline src="/theme.js"></script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>{title ? `${title} · ${site}` : site}</title>
   </head>
   <body class:list={{ 'home-page': home }}>
     <a class="skip-link" href="#main">跳到正文</a>
-    <header class="site-header">
-      <a class="wordmark" href="/" aria-label={`${site} 首页`}>{site}</a>
+    <slot name="hero" />
+    <div class="page-frame">
+    <header class="site-header" id="navigation">
       <nav class="site-nav" aria-label="主导航">
         <a href="/" aria-current={path === '/' ? 'page' : undefined}>首页</a>
         <a href="/articles" aria-current={path.startsWith('/articles') || path.startsWith('/posts/') ? 'page' : undefined}>文章</a>
         <a href="/login" data-account-link aria-current={path === '/account' || path === '/login' ? 'page' : undefined}>登录</a>
+        <a href="/admin" data-admin-link hidden aria-current={path === '/admin' ? 'page' : undefined}>管理员页面</a>
+
       </nav>
     </header>
     <main id="main" tabindex="-1"><slot /></main>
     <footer class="site-footer"><span>{site}</span><span>© {new Date().getFullYear()}</span></footer>
+    </div>
+    <div class="theme-switch" role="group" aria-label="外观模式">
+      <button type="button" data-theme-mode="light" aria-label="浅色模式" title="浅色模式" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg>
+      </button>
+      <button type="button" data-theme-mode="dark" aria-label="深色模式" title="深色模式" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 13.5A8.7 8.7 0 0 1 10.5 3a8.8 8.8 0 1 0 10 10.5Z" /></svg>
+      </button>
+      <button type="button" data-theme-mode="system" aria-label="跟随系统" title="跟随系统" aria-pressed="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-.5 2.4-1.8 1L4.4 6 2.9 8.6l1.8 1.6v2.1L2.9 14l1.5 2.6 2.3-.4 1.8 1L9 20h3l.5-2.8 1.8-1 2.3.4 1.5-2.6-1.8-1.7v-2.1l1.8-1.6L16.6 6l-2.3.4-1.8-1L12 3Z" transform="translate(1.5 .5)" /><circle cx="12" cy="12" r="3" /></svg>
+      </button>
+    </div>
     <script>import '../scripts/client';</script>
   </body>
 </html>

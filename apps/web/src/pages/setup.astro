@@ -7,11 +7,11 @@ try {
   if ((await readApi<SiteState>('/api/site')).installed) return Astro.redirect('/login');
 } catch { available = false; Astro.response.status = 503; }
 ---
-<Base title="安装博客" description="设置网站信息并创建站长账户。">
+<Base title="安装博客" description="设置网站信息并创建管理员账户。">
   <div class="setup-shell">
-    <header class="page-heading"><h1>安装博客</h1><p>填写网站信息，创建你的站长账户。</p></header>
+    <header class="page-heading"><h1>安装博客</h1><p>填写网站信息，创建你的管理员账户。</p></header>
     {available ? <>
-      <p class="notice">安装只需完成一次。站长账户唯一，安装完成后入口关闭。</p>
+      <p class="notice">安装只需完成一次。管理员账户唯一，安装完成后入口关闭。</p>
       <form id="setup-form">
         <fieldset>
           <legend>网站信息</legend>
@@ -22,18 +22,18 @@ try {
           <p class="field-help">名称用于导航和页面标题，简介用于页面描述。名称最多 120 字节，简介最多 1000 字节。</p>
         </fieldset>
         <fieldset>
-          <legend>站长账户</legend>
+          <legend>管理员账户</legend>
           <label for="setup-username">用户名</label>
-          <input id="setup-username" name="username" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z]{3,32}" aria-describedby="setup-username-help" />
-          <p class="field-help" id="setup-username-help">3–32 位小写英文字母，作为唯一登录账号。</p>
+          <input id="setup-username" name="username" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z_\x2d][a-z0-9_\x2d]{2,31}" aria-describedby="setup-username-help" />
+          <p class="field-help" id="setup-username-help">3–32 位小写字母、数字、下划线或减号，首位为小写字母、下划线或减号，作为唯一登录账号。</p>
           <label for="setup-nickname">昵称</label>
           <input id="setup-nickname" name="nickname" autocomplete="nickname" required maxlength="128" aria-describedby="setup-nickname-help" />
           <p class="field-help" id="setup-nickname-help">1–128 个 UTF-8 字节，支持中文和表情，可以重复。</p>
           <label for="setup-password">密码</label>
-          <input id="setup-password" name="password" type="password" autocomplete="new-password" required maxlength="1024" aria-describedby="setup-password-help" />
-          <p class="field-help" id="setup-password-help">12–1024 字节，请使用较长且不重复的密码。</p>
+          <input id="setup-password" name="password" type="password" autocomplete="new-password" required minlength="6" maxlength="256" aria-describedby="setup-password-help" />
+          <p class="field-help" id="setup-password-help">6–128 个字符，请使用较长且不重复的密码。</p>
           <label for="setup-confirm">确认密码</label>
-          <input id="setup-confirm" name="confirm" type="password" autocomplete="new-password" required maxlength="1024" />
+          <input id="setup-confirm" name="confirm" type="password" autocomplete="new-password" required minlength="6" maxlength="256" />
         </fieldset>
         <fieldset>
           <legend>确认安装权限</legend>

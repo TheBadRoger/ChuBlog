@@ -18,9 +18,13 @@ const links = [
   ] : []),
 ];
 ---
-<Base home title="首页">
-  <section class="navigation-home" aria-labelledby="home-title">
+<Base home title="首页" site={state?.site ?? null}>
+  <section slot="hero" class="home-hero" aria-labelledby="home-title">
+    <div class="hero-orbit" aria-hidden="true"></div>
     <header><h1 id="home-title">{name}</h1><p>{description}</p></header>
+    <a class="hero-scroll" href="#navigation" aria-label="向下浏览首页导航"><span>向下浏览</span><span aria-hidden="true">↓</span></a>
+  </section>
+  <section class="navigation-home" aria-label="探索博客">
     <nav aria-label="首页导航">
       <ul>{links.map((link) => <li><a href={link.href}><h2>{link.title}</h2><p>{link.description}</p></a></li>)}</ul>
     </nav>
@@ -28,9 +32,15 @@ const links = [
   </section>
 </Base>
 <style>
-  .navigation-home { width: min(100% - 48px, 760px); margin: 70px auto 90px; }
-  header { text-align: center; margin-bottom: 58px; }
-  h1 { font-size: clamp(34px, 6vw, 56px); font-weight: 500; letter-spacing: -.045em; line-height: 1.35; margin-bottom: 18px; }
+  .home-hero { min-height: 100svh; display: grid; place-items: center; position: relative; overflow: hidden; isolation: isolate; padding: 90px 28px; }
+  .home-hero header { text-align: center; max-width: 900px; z-index: 1; }
+  .hero-orbit { position: absolute; width: min(84vw, 840px); aspect-ratio: 1; border: 1px solid var(--line); border-radius: 50%; opacity: .55; transform: translate(32%, -4%) scaleY(.68) rotate(-18deg); animation: orbit 18s ease-in-out infinite alternate; }
+  .hero-orbit::after { content: ''; position: absolute; inset: 28px -36px; border: 1px solid var(--line); border-radius: 50%; }
+  .hero-scroll { position: absolute; bottom: 34px; display: grid; gap: 12px; text-align: center; font-size: 12px; color: var(--muted); padding: 10px 18px; }
+  .hero-scroll span:last-child { font-size: 21px; }
+  @keyframes orbit { to { transform: translate(30%, 0) scaleY(.72) rotate(-12deg); } }
+  .navigation-home { width: min(100% - 48px, 760px); margin: 65px auto 100px; }
+  h1 { font-size: clamp(40px, 8vw, 88px); font-weight: 500; letter-spacing: -.05em; line-height: 1.35; margin-bottom: 22px; overflow-wrap: anywhere; }
   header p { color: var(--muted); font-size: 15px; white-space: pre-line; overflow-wrap: anywhere; }
   ul { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; column-gap: 42px; }
   li { min-width: 0; border-top: 1px solid var(--line); }
@@ -38,5 +48,6 @@ const links = [
   h2 { font-size: 19px; font-weight: 550; line-height: 1.5; margin-bottom: 9px; }
   li p { font-size: 13px; color: var(--muted); margin-bottom: 0; }
   .site-unavailable { text-align: center; color: var(--muted); font-size: 13px; margin: 30px 0 0; }
-  @media (max-width: 560px) { .navigation-home { margin-top: 45px; } ul { grid-template-columns: 1fr; } header { margin-bottom: 40px; } }
+  @media (max-width: 560px) { .navigation-home { margin-top: 45px; } ul { grid-template-columns: 1fr; } h1 { font-size: clamp(36px, 10vw, 56px); } }
+  @media (prefers-reduced-motion: reduce) { .hero-orbit { animation: none; } }
 </style>

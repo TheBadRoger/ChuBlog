@@ -261,6 +261,7 @@ async fn execute(
         ("receive.fsckObjects", "true"),
         ("transfer.fsckObjects", "true"),
         ("gc.auto", "0"),
+        ("pack.threads", "1"),
         ("core.hooksPath", "/hooks"),
         ("http.getanyfile", "false"),
         ("uploadpack.allowAnySHA1InWant", "false"),
@@ -276,10 +277,8 @@ async fn execute(
     if let Some(protocol) = protocol {
         command.env("GIT_PROTOCOL", protocol);
     }
-    accounts::store(app)
-        .await
-        .database
-        .configure_child(&mut command);
+    let database = accounts::store(app).await.database;
+    database.configure_child(&mut command);
     let mut child = command.spawn().context("无法启动 Git HTTP 协议执行器")?;
     let mut input = child.stdin.take().context("缺少 Git stdin")?;
     let output = child.stdout.take().context("缺少 Git stdout")?;
@@ -298,13 +297,23 @@ async fn execute(
         error.take(8193).read_to_end(&mut bytes).await?;
         Ok::<_, std::io::Error>(bytes)
     };
-    let (_written, bytes, _errors) = tokio::join!(write, read, stderr);
+    let (written, bytes, errors) = tokio::join!(write, read, stderr);
     let status = child.wait().await?;
     let bytes = bytes?;
-    ensure!(
-        status.success() && bytes.len() <= MAX_RESPONSE as usize,
-        "Git 服务超时、失败或输出过大"
-    );
+    if !status.success() {
+        let errors = errors?;
+        let mut detail = String::from_utf8_lossy(&errors).into_owned();
+        for secret in [hash, database.password.as_str()] {
+            if !secret.is_empty() {
+                detail = detail.replace(secret, "[redacted]");
+            }
+        }
+        tracing::error!(action = "git_backend_failed", exit_code = ?status.code(), stderr = ?detail,
+            "Git HTTP 协议执行失败");
+        anyhow::bail!("Git HTTP 协议执行失败");
+    }
+    written.context("写入 Git HTTP 请求失败")?;
+    ensure!(bytes.len() <= MAX_RESPONSE as usize, "Git 响应过大");
     parse_response(bytes)
 }
 fn parse_response(bytes: Vec<u8>) -> Result<Response> {

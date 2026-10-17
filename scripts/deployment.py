@@ -130,7 +130,7 @@ def deploy(args):
     print('启动博客与 HTTPS Git 接收服务…', flush=True)
     run(compose + ['up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90'])
     port = os.environ.get('WEB_PORT', read_config(args.env_file).get('WEB_PORT', '1741'))
-    print(f'部署完成：http://127.0.0.1:{port}\n首次访问 /setup 完成安装并创建唯一站长；普通注册不授予站长权限。\n安装密钥：使用相同 Compose 参数执行 {SETUP_TOKEN_COMMAND} 获取。', flush=True)
+    print(f'部署完成：http://127.0.0.1:{port}\n首次访问 /setup 完成安装并创建唯一管理员；普通注册不授予管理员权限。\n安装密钥：使用相同 Compose 参数执行 {SETUP_TOKEN_COMMAND} 获取。', flush=True)
 
 
 def update(args):

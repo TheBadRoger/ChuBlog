@@ -8,9 +8,9 @@
 
 | 数据 | 类型与约束 |
 | --- | --- |
-| 用户 ID、站长 ID、安装 ID | INT，用户 ID 自增 |
+| 用户 ID、管理员 ID、安装 ID | INT，用户 ID 自增 |
 | 昵称 | VARCHAR(128)，可重复的 UTF-8 展示属性 |
-| 账号、密码 PHC | VARCHAR(32)、VARCHAR(255)，账号由 3–32 位小写英文字母组成且唯一，PHC 保存完整参数、盐和哈希 |
+| 账号、密码 PHC | VARCHAR(32)、VARCHAR(255)，账号由 3–32 位小写字母、数字、下划线或减号，首位为小写字母、下划线或减号组成且唯一，PHC 保存完整参数、盐和哈希 |
 | 网站名称、简介 | VARCHAR(120)、VARCHAR(1000) |
 | 账户与安装时间 | TIMESTAMP，上次登录可为 NULL |
 | 权限 | ENUM blog_permission：BANNED、MEMBER、AUTHOR、MASTER |
@@ -27,16 +27,17 @@ VARCHAR 和 CHAR 校验字符长度，应用另行校验 UTF-8 字节数。CHAR 
 
 ChuSQL TIMESTAMP 使用秒级 `YYYY-MM-DD HH:MM:SS`，也接受 T 分隔形式。应用写入时统一转换为 UTC 秒级，账户 API 返回 `YYYY-MM-DDTHH:MM:SSZ`。文章快照可保留毫秒，派生索引按秒保存。首次公开前的数据库时间使用 SQL NULL。
 
-## 初始化与站长
+## 初始化与管理员
 
 SQL 编译进 API 镜像，修改后重新构建部署：
 
 - [create-database.sql](../apps/api/sql/create-database.sql)：数据库。
+- [account-indexes.sql](../apps/api/sql/account-indexes.sql)：用户名列的查询索引，保留 username 唯一约束。
 - [accounts.sql](../apps/api/sql/accounts.sql)：账户、安装记录和权限 ENUM。
 - [complete-empty-install.sql](../apps/api/sql/complete-empty-install.sql)：账户与安装记录都为空时，重建这两张空表，再由 accounts.sql 创建当前结构。
 - [articles.sql](../apps/api/sql/articles.sql)：文章索引、状态和格式 ENUM。
 
-安装事务向 blog_users 插入 MASTER，再用真实用户 ID 写入 blog_site.master_user_id。提交后，系统读取站长账号，为其 Git 仓库释放两篇文章，提交记录保存在 blog_site.starter_commit。索引重建保留账户和安装数据。
+安装事务向 blog_users 插入 MASTER，再用真实用户 ID 写入 blog_site.master_user_id。提交后，系统读取管理员账号，为其 Git 仓库释放两篇文章，提交记录保存在 blog_site.starter_commit。索引重建保留账户和安装数据。
 
 初始化按身份分工：数据库 root 创建 ENUM 并清理空安装表，博客账号 chublog_index 创建表并执行日常读写。普通账号保留 CONNECT、CREATE 和自身表权限，root 凭据仅供初始化任务使用。
 

@@ -139,11 +139,25 @@ pub(crate) async fn provision_at(address: &str, root_password: &str, password: &
     db.query("USE chublog").await?;
     crate::database::ensure_schema(&db, crate::database::ACCOUNTS_SQL).await?;
     crate::database::ensure_schema(&db, crate::database::ARTICLES_SQL).await?;
+    match db
+        .query(
+            include_str!("../sql/account-indexes.sql")
+                .trim()
+                .trim_end_matches(';'),
+        )
+        .await
+    {
+        Ok(_) => {}
+        Err(chusql_driver::Error::Server { message, .. })
+            if message.contains("index on column")
+                && message.contains("username")
+                && message.contains("already exists") => {}
+        Err(error) => return Err(error.into()),
+    }
     db.query("SELECT id, username, nickname, password_hash, created_at, last_login_at, permission_level FROM blog_users LIMIT 0")
         .await.context("blog_users 结构与当前版本不一致；本版需要 nickname 等账户字段，请核对独立 SQL 文件与目标数据库")?;
     db.query("SELECT id, name, description, master_user_id, installed_at, starter_commit FROM blog_site LIMIT 0")
         .await.context("blog_site 结构与当前版本不一致，请核对独立 SQL 文件与目标数据库")?;
-    crate::accounts_db::verify_empty_install(&db).await?;
     db.close().await;
     Ok(())
 }

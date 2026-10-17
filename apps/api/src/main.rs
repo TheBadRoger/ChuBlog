@@ -53,6 +53,8 @@ struct App {
     repository: PathBuf,
     registration: bool,
     setup_token: String,
+    site: Mutex<Option<Value>>,
+    nicknames: RwLock<std::collections::BTreeMap<String, String>>,
     accounts: Mutex<accounts::Accounts>,
     hash_slots: Arc<Semaphore>,
     git_slots: Arc<Semaphore>,
@@ -90,6 +92,19 @@ fn origin(headers: &HeaderMap) -> ApiResult<bool> {
     Ok(secure)
 }
 
+fn display_metadata(
+    meta: &content::Metadata,
+    nicknames: &std::collections::BTreeMap<String, String>,
+) -> Value {
+    let mut value = json!(meta);
+    value["author_name"] = json!(
+        nicknames
+            .get(&meta.author)
+            .map(String::as_str)
+            .unwrap_or("已注销用户")
+    );
+    value
+}
 async fn posts(State(app): State<Arc<App>>) -> Json<Value> {
     let snapshot = app.snapshot.read().await;
     let mut posts: Vec<_> = snapshot
@@ -99,7 +114,10 @@ async fn posts(State(app): State<Arc<App>>) -> Json<Value> {
         .map(|p| &p.meta)
         .collect();
     posts.sort_by(|a, b| b.date.cmp(&a.date).then(a.slug.cmp(&b.slug)));
-    Json(json!({"commit": snapshot.commit, "posts": posts}))
+    let nicknames = app.nicknames.read().await;
+    Json(
+        json!({"commit": snapshot.commit, "posts": posts.into_iter().map(|meta| display_metadata(meta, &nicknames)).collect::<Vec<_>>()}),
+    )
 }
 async fn public_post(
     State(app): State<Arc<App>>,
@@ -113,8 +131,9 @@ async fn public_post(
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "文章不存在".into()))?;
     // Relaxed is sufficient: this independent counter does not synchronize other state.
     app.views.fetch_add(1, Ordering::Relaxed);
+    let meta = display_metadata(&post.meta, &*app.nicknames.read().await);
     Ok(Json(
-        json!({"meta": post.meta, "markdown": post.markdown, "format": post.format, "author": post.author, "article_id": post.article_id, "entry": post.entry, "pages": post.pages.keys().map(|name| json!({"name":name,"url":format!("/api/posts/{key}/pages/{name}")})).collect::<Vec<_>>(), "assets": post.assets.iter().map(|a| json!({"name": a.name, "url": format!("/api/assets/{key}/{}", a.name)})).collect::<Vec<_>>()}),
+        json!({"meta": meta, "markdown": post.markdown, "format": post.format, "author": post.author, "article_id": post.article_id, "entry": post.entry, "pages": post.pages.keys().map(|name| json!({"name":name,"url":format!("/api/posts/{key}/pages/{name}")})).collect::<Vec<_>>(), "assets": post.assets.iter().map(|a| json!({"name": a.name, "url": format!("/api/assets/{key}/{}", a.name)})).collect::<Vec<_>>()}),
     ))
 }
 async fn page(
@@ -132,8 +151,9 @@ async fn page(
         .get(&name)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "页面不存在".into()))?;
     app.views.fetch_add(1, Ordering::Relaxed);
+    let meta = display_metadata(&post.meta, &*app.nicknames.read().await);
     Ok(Json(
-        json!({"meta":post.meta,"name":name,"markdown":text,"format":if name.ends_with(".txt") { "text" } else { "markdown" },
+        json!({"meta":meta,"name":name,"markdown":text,"format":if name.ends_with(".txt") { "text" } else { "markdown" },
         "pages":post.pages.keys().map(|page| json!({"name":page,"url":format!("/api/posts/{key}/pages/{page}")})).collect::<Vec<_>>(),
         "assets":post.assets.iter().map(|a| json!({"name":a.name,"url":format!("/api/assets/{key}/{}",a.name)})).collect::<Vec<_>>() }),
     ))
@@ -244,7 +264,9 @@ async fn refresh(app: &App, source: &std::path::Path) -> Result<()> {
         warn!(action = "starter_articles_pending", error = %error);
     }
     let current = app.snapshot.read().await.clone();
-    let identities = accounts::store(app).await.names().await?;
+    let nicknames = accounts::store(app).await.display_names().await?;
+    let identities = nicknames.keys().cloned().collect::<Vec<_>>();
+    *app.nicknames.write().await = nicknames;
     let snapshot = git_store::import_authors(&app.data, source, &current, &identities).await?;
     if snapshot.commit != current.commit || snapshot.pending != current.pending {
         accounts::atomic(
@@ -263,8 +285,16 @@ async fn refresh(app: &App, source: &std::path::Path) -> Result<()> {
     }
     Ok(())
 }
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // The API and pre-receive processes share the container's PID and CPU budget.
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(4)
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -320,10 +350,13 @@ async fn main() -> Result<()> {
     );
     ensure!(source.is_absolute(), "INGRESS_DIR 必须是绝对路径");
     let accounts = accounts::load(accounts_db::Store::from_env()?).await?;
+    let nicknames = accounts.store.display_names().await.unwrap_or_default();
     let app = Arc::new(App {
         data: data.clone(),
         repository: source.clone(),
         setup_token: setup::load_token(&data).await?,
+        site: Mutex::new(None),
+        nicknames: RwLock::new(nicknames),
         registration: std::env::var("ALLOW_REGISTRATION").as_deref() == Ok("true"),
         accounts: Mutex::new(accounts),
         hash_slots: Arc::new(Semaphore::new(2)),

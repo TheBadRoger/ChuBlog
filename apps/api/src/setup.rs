@@ -61,6 +61,10 @@ fn matches_token(expected: &str, supplied: &str) -> bool {
 }
 
 pub async fn site(State(app): State<Arc<App>>) -> ApiResult<Json<Value>> {
+    let mut cached = app.site.lock().await;
+    if let Some(state) = cached.as_ref() {
+        return Ok(Json(state.clone()));
+    }
     let store = accounts::store(&app).await;
     let site = store.site().await.map_err(accounts::database_error)?;
     let owner = if site.is_some() {
@@ -69,15 +73,19 @@ pub async fn site(State(app): State<Arc<App>>) -> ApiResult<Json<Value>> {
                 .owner()
                 .await
                 .map_err(accounts::database_error)?
-                .ok_or_else(|| ApiError(StatusCode::SERVICE_UNAVAILABLE, "站长账户不存在".into()))?
+                .ok_or_else(|| {
+                    ApiError(StatusCode::SERVICE_UNAVAILABLE, "管理员账户不存在".into())
+                })?
                 .username,
         )
     } else {
         None
     };
-    Ok(Json(
-        json!({"installed":site.is_some(),"site":site,"owner":owner}),
-    ))
+    let state = json!({"installed":site.is_some(),"site":site,"owner":owner});
+    if site.is_some() {
+        *cached = Some(state.clone());
+    }
+    Ok(Json(state))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -128,6 +136,12 @@ pub async fn install(
         .install(&site, &input.username, &input.nickname, &hash)
         .await
         .map_err(accounts::database_error)?;
+    app.nicknames
+        .write()
+        .await
+        .insert(input.username.clone(), input.nickname.clone());
+    *app.site.lock().await =
+        Some(json!({"installed": true, "site": site, "owner": input.username}));
     let pending = if let Err(error) = crate::starter::ensure(&app).await {
         tracing::warn!(action = "starter_articles_pending", error = %error);
         true

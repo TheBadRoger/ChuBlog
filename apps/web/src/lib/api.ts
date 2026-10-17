@@ -3,6 +3,7 @@ export interface Metadata {
   title: string;
   slug: string;
   author: string;
+  author_name: string;
   description: string;
   tags: string[];
   cover: string | null;
@@ -25,11 +26,11 @@ export class ApiError extends Error {
   constructor(public status: number) { super('文章服务暂时不可用'); }
 }
 
-export async function readApi<T>(path: string): Promise<T> {
+export async function readApi<T>(path: string, headers?: Record<string, string>): Promise<T> {
   const base = process.env.API_BASE_URL || 'http://127.0.0.1:3001';
   const response = await fetch(new URL(path, base), {
     signal: AbortSignal.timeout(5000),
-    headers: { Accept: 'application/json' },
+    headers: { Accept: 'application/json', ...headers },
     cache: 'no-store',
   });
   if (!response.ok) throw new ApiError(response.status);

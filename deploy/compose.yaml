@@ -25,6 +25,7 @@ services:
     network_mode: none
     logging: *logging
   api:
+    init: true
     build: { <<: *backend-build, target: api }
     depends_on:
       init: { condition: service_completed_successfully }

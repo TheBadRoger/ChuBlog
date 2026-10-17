@@ -70,8 +70,12 @@ pub async fn atomic(path: &FilePath, bytes: &[u8], mode: u32) -> Result<()> {
 }
 pub(crate) fn username(value: &str) -> Result<()> {
     ensure!(
-        (3..=32).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_lowercase()),
-        "用户名必须为 3–32 位小写英文字母"
+        (3..=32).contains(&value.len())
+            && !value.as_bytes()[0].is_ascii_digit()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'),
+        "用户名需要 3–32 位小写字母、数字、下划线或减号，首位不能是数字"
     );
     Ok(())
 }
@@ -84,8 +88,8 @@ pub(crate) fn nickname(value: &str) -> Result<()> {
 }
 fn password(value: &str) -> Result<()> {
     ensure!(
-        (12..=1024).contains(&value.len()),
-        "口令必须为 12–1024 字节"
+        (6..=128).contains(&value.chars().count()),
+        "密码需要 6–128 个字符"
     );
     Ok(())
 }
@@ -125,7 +129,6 @@ pub fn database_error(error: crate::accounts_db::Error) -> ApiError {
             tracing::error!(
                 action = "account_database_unavailable",
                 reason,
-                database_detail = database_detail(&source),
                 operation = source
                     .downcast_ref::<&'static str>()
                     .copied()
@@ -136,31 +139,6 @@ pub fn database_error(error: crate::accounts_db::Error) -> ApiError {
         }
     };
     ApiError(status, error.to_string())
-}
-// Only fixed diagnostic labels reach logs; server errors can contain submitted values.
-fn database_detail(source: &anyhow::Error) -> &'static str {
-    let Some(chusql_driver::Error::Server { message, .. }) =
-        source.downcast_ref::<chusql_driver::Error>()
-    else {
-        return "connection_or_decode";
-    };
-    if message.starts_with("NOT NULL: column id ") {
-        "id_not_generated"
-    } else if message.starts_with("NOT NULL:") {
-        "required_column_missing"
-    } else if message.starts_with("UNIQUE:") {
-        "unique_constraint"
-    } else if message.starts_with("cannot put ") {
-        "column_type_mismatch"
-    } else if message.starts_with("invalid ENUM value") {
-        "enum_value_rejected"
-    } else if message.starts_with("timestamp must ") {
-        "timestamp_format"
-    } else if message.starts_with("value is longer than ") {
-        "column_length"
-    } else {
-        "unclassified_server_error"
-    }
 }
 fn database_problem(source: &anyhow::Error) -> (&'static str, &'static str) {
     match source.downcast_ref::<chusql_driver::Error>() {
@@ -194,6 +172,9 @@ async fn authenticate(
     name: &str,
     password: String,
 ) -> ApiResult<crate::accounts_db::User> {
+    if !(6..=128).contains(&password.chars().count()) {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "登录失败".into()));
+    }
     let store = store(app).await;
     let user = store.user(name).await.map_err(database_error)?;
     let hash = match &user {
@@ -560,30 +541,17 @@ pub async fn git_credentials(app: &App, name: &str, secret: String) -> ApiResult
 mod tests {
     use super::*;
     #[test]
-    fn database_diagnostics_classify_write_failures_without_exposing_values() {
-        for (detail, expected) in [
-            ("NOT NULL: column id cannot be null", "id_not_generated"),
-            ("cannot put this value into TInt", "column_type_mismatch"),
-            (
-                "invalid ENUM value for blog_permission: private input",
-                "enum_value_rejected",
-            ),
-            (
-                "timestamp must look like YYYY-MM-DD HH:MM:SS",
-                "timestamp_format",
-            ),
-            ("value is longer than 32 characters", "column_length"),
-            (
-                "private SQL containing a password hash",
-                "unclassified_server_error",
-            ),
+    fn password_limits_count_unicode_characters() {
+        for value in [
+            "123456".to_owned(),
+            "a".repeat(128),
+            "密".repeat(6),
+            "😺".repeat(128),
         ] {
-            let error = anyhow::Error::new(chusql_driver::Error::Server {
-                code: "query_error".into(),
-                message: detail.into(),
-            })
-            .context("create_account");
-            assert_eq!(database_detail(&error), expected);
+            assert!(password(&value).is_ok());
+        }
+        for value in ["short".to_owned(), "a".repeat(129), "😺".repeat(129)] {
+            assert!(password(&value).is_err());
         }
     }
     #[test]

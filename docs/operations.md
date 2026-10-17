@@ -19,7 +19,7 @@
 
 `collection.json` 保存生效版本、暂存状态和原始系统时间，需要完整保留。Git 可以恢复有效正文，原始时间及错误索引前的生效版本依赖快照备份。默认卸载保留数据卷，`--purge` 永久删除项目数据。
 
-`blog_site.starter_commit` 记录内置文章首次释放状态。保留该字段可继续维护或撤回两篇文章；值为 NULL 时后台重试，遇到已有其他内容时保留仓库并报告冲突。站长账户和安装记录应一并恢复。
+`blog_site.starter_commit` 记录内置文章首次释放状态。保留该字段可继续维护或撤回两篇文章；值为 NULL 时后台重试，遇到已有其他内容时保留仓库并报告冲突。管理员账户和安装记录应一并恢复。
 
 ## 数据库故障与索引
 
@@ -43,6 +43,6 @@
 docker compose --env-file .env -f deploy/compose.yaml logs --tail 80 api
 ```
 
-错误记录包含 reason 分类、operation 阶段和 database_detail 细分原因，例如 create_account 配合 id_not_generated 表示用户 ID 自增配置需要核对，column_type_mismatch 表示字段类型与写入值存在差异。日志以固定分类代替 SQL、密码和昵称原文。数据库结构以独立 SQL 文件为准，现有数据处理前先完成备份。
+错误记录包含 reason 分类和 operation 阶段，例如 create_account、record_installation、commit_transaction。数据库结构以独立 SQL 文件为准，现有数据处理前先完成备份。
 
-部署初始化会对空安装库执行账户和网站信息写入预检，使用固定检查数据并回滚整个事务。失败时部署输出 ChuSQL 原始错误，便于核对字段类型、自增和约束；已有账户或安装记录时跳过写入预检。
+安装后的公开网站信息缓存在 API 内存中，重启后从 ChuSQL 重新读取；账户与发布权限仍在使用时查询数据库。Git 子进程失败会记录退出码及经过凭据遮盖的错误输出。出现 cannot fork() 时，可用 `docker stats --no-stream` 检查 PIDS 和内存占用。

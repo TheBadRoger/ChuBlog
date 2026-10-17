@@ -41,8 +41,8 @@ function formAction(id: string, action: (data: FormData, form: HTMLFormElement) 
 }
 const value = (data: FormData, name: string) => String(data.get(name) || '');
 function checkPassword(password: string) {
-  const size = new TextEncoder().encode(password).length;
-  if (size < 12 || size > 1024) throw new Error('密码需要在 12 至 1024 个字节之间。');
+  const size = [...password].length;
+  if (size < 6 || size > 128) throw new Error('密码需要在 6 至 128 个字符之间。');
 }
 
 formAction('setup-form', async (data, form) => {
@@ -57,6 +57,7 @@ formAction('setup-form', async (data, form) => {
 
 formAction('auth-form', async (data, form) => {
   const credentials = { username: value(data, 'username'), password: value(data, 'password') };
+  checkPassword(credentials.password);
   if (form.dataset.mode === 'register') {
     checkPassword(credentials.password);
     if (credentials.password !== value(data, 'confirm')) throw new Error('两次输入的密码不一致。');
@@ -101,25 +102,23 @@ async function loadAdmin(account: Account) {
     const list = document.querySelector<HTMLElement>('#admin-users')!;
     for (const [username, grant] of Object.entries(users)) {
       const form = element('form'); form.className = 'admin-user';
-      form.append(element('h4', username === account.username ? `${username}（当前账户）` : username));
-      form.append(element('p', grant.nickname));
+      form.append(element('h4', `${grant.nickname}（${username}）${username === account.username ? ' · 当前账户' : ''}`));
       if (username === account.username) { form.append(element('p', '当前管理员')); list.append(form); continue; }
       const controls = element('div'); controls.className = 'admin-user-controls';
-      const select = element('select'); select.setAttribute('aria-label', `${username} 的角色`);
-      for (const [role, label] of Object.entries(roles)) {
-        const option = element('option', label); option.value = role; option.selected = role === grant.role;
+      const select = element('select'); select.setAttribute('aria-label', `${grant.nickname} 的状态与权限`);
+      for (const [role, label] of Object.entries({ banned: '已封禁', ...roles })) {
+        const option = element('option', label); option.value = role;
+        option.selected = role === (grant.enabled ? grant.role : 'banned');
         if (role === 'admin' && grant.role !== 'admin') option.disabled = true;
         select.append(option);
       }
-      const label = element('label'); const enabled = element('input'); enabled.type = 'checkbox'; enabled.checked = grant.enabled;
-      label.append(enabled, document.createTextNode('启用账户'));
       const button = element('button', '保存授权'); button.className = 'button button-quiet'; button.type = 'submit';
-      controls.append(select, label, button);
+      controls.append(select, button);
       const message = element('p'); message.className = 'form-status'; message.setAttribute('role', 'status');
       form.append(controls, message);
       form.addEventListener('submit', async (event) => {
         event.preventDefault(); if (button.disabled) return; button.disabled = true;
-        try { await api(`/api/admin/users/${encodeURIComponent(username)}`, 'PATCH', { enabled: enabled.checked, role: select.value }); showStatus(message, '授权已保存。'); }
+        try { await api(`/api/admin/users/${encodeURIComponent(username)}`, 'PATCH', { enabled: select.value !== 'banned', role: select.value === 'banned' ? 'reader' : select.value }); showStatus(message, '授权已保存。'); }
         catch (error) { showStatus(message, errorMessage(error), true); }
         finally { button.disabled = false; }
       });
@@ -129,7 +128,7 @@ async function loadAdmin(account: Account) {
     const entries = Object.entries(state.pending);
     if (!entries.length) pending.append(element('p', '没有待修复的索引。'));
     for (const [author, item] of entries) {
-      const row = element('div'); row.className = 'pending-item'; row.append(element('strong', `${author} / ${item.commit.slice(0, 8)}`), element('p', item.reason)); pending.append(row);
+      const row = element('div'); row.className = 'pending-item'; row.append(element('strong', `${users[author]?.nickname || "已注销用户"} / ${item.commit.slice(0, 8)}`), element('p', item.reason)); pending.append(row);
     }
   } catch (error) { showStatus(document.querySelector('#admin-status'), errorMessage(error), true); }
 }
@@ -141,16 +140,17 @@ async function loadAccount() {
     csrf = account.csrf;
     const link = document.querySelector<HTMLAnchorElement>('[data-account-link]');
     if (link) { link.href = '/account'; link.textContent = '账户'; }
+    const adminLink = document.querySelector<HTMLAnchorElement>('[data-admin-link]');
+    if (adminLink) adminLink.hidden = account.permissions.role !== 'admin';
+    if (account.permissions.role === 'admin' && document.querySelector('#admin-section')) await loadAdmin(account);
     if (!content) return;
     content.hidden = false;
     showStatus(document.querySelector('#account-status'), '');
     document.querySelector('#account-name')!.textContent = account.nickname;
-    document.querySelector('#account-username')!.textContent = `@${account.username}`;
     document.querySelector('#account-role')!.textContent = roles[account.permissions.role];
     document.querySelector('#publish-status')!.textContent = account.permissions.role === 'reader'
-      ? '发布和克隆文章仓库需要由站长授予发布权限。'
+      ? '管理员可以为你授予发布权限，授权后即可使用 Git 克隆仓库和发布文章。'
       : '已获得发布权限，可以使用网站账号密码访问个人文章仓库。';
-    if (account.permissions.role === 'admin') await loadAdmin(account);
   } catch (error) {
     if (!content) return;
     showStatus(document.querySelector('#account-status'), errorMessage(error), true);

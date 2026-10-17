@@ -8,7 +8,7 @@ let failed = false;
 try { articles = (await readApi<{ posts: Metadata[] }>('/api/posts')).posts; }
 catch { failed = true; Astro.response.status = 503; }
 const tags = [...new Set(articles.flatMap((article) => article.tags))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
-const filtered = articles.filter((article) => (!selectedTag || article.tags.includes(selectedTag)) && (!query || `${article.title} ${article.description} ${article.author} ${article.tags.join(' ')}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())));
+const filtered = articles.filter((article) => (!selectedTag || article.tags.includes(selectedTag)) && (!query || `${article.title} ${article.description} ${article.author_name} ${article.tags.join(' ')}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())));
 const totalPages = Math.max(1, Math.ceil(filtered.length / 15));
 const page = Math.min(totalPages, Math.max(1, Number.parseInt(Astro.url.searchParams.get('page') || '1', 10) || 1));
 const visible = filtered.slice((page - 1) * 15, page * 15);
@@ -32,7 +32,7 @@ const urlFor = (page: number) => { const params = new URLSearchParams(); if (que
       : <ol class="article-list">{visible.map((article) => <li>
         <article class:list={{ 'article-with-cover': article.cover }}>
           <div class="article-summary">
-            <div class="article-meta"><time datetime={article.date}>{displayDate(article.date)}</time><span>{article.author}</span></div>
+            <div class="article-meta"><time datetime={article.date}>{displayDate(article.date)}</time><span>{article.author_name}</span></div>
             <h2><a href={postUrl(article.slug)}>{article.title}</a></h2>
             {article.description && <p>{article.description}</p>}
             {article.tags.length > 0 && <div class="article-tags">{article.tags.map((tag) => <a href={`/articles?tag=${encodeURIComponent(tag)}`}>{tag}</a>)}</div>}
