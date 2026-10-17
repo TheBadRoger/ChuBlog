@@ -42,9 +42,18 @@ def configure(path):
             if values.get(key) and not values[key].startswith('replace-with-'):
                 raise RuntimeError(f'{key} 环境覆盖与已保存口令不同，已停止以避免破坏现有数据库访问。')
             changes[key] = value
+    for key, default in [('WEB_PORT', '1741'), ('SSH_PORT', '2222')]:
+        value = os.environ.get(key, values.get(key, default))
+        if not value.isascii() or not value.isdigit() or not 1 <= int(value) <= 65535:
+            raise RuntimeError(f'{key} 必须是 1 到 65535 之间的端口号。')
+        value = str(int(value))
+        if value != values.get(key):
+            changes[key] = value
     effective = {**values, **changes}
     if os.environ.get(DB_KEYS[0], effective.get(DB_KEYS[0])) == os.environ.get(DB_KEYS[1], effective.get(DB_KEYS[1])):
         raise RuntimeError('数据库 root 与博客数据库账号必须使用不同口令。')
+    if effective.get('WEB_PORT') == effective.get('SSH_PORT'):
+        raise RuntimeError('WEB_PORT 与 SSH_PORT 不能相同。')
     seen = set()
     lines = []
     for line in text.splitlines():

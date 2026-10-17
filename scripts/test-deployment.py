@@ -45,7 +45,7 @@ if kind == 'git' and args[:2] == ['status', '--porcelain']:
                 tool.chmod(0o755)
             log = root / 'calls.jsonl'
             env = {key: value for key, value in os.environ.items()
-                   if key not in ['CHUSQL_ROOT_PASSWORD', 'CHUSQL_PASSWORD']}
+                   if key not in ['CHUSQL_ROOT_PASSWORD', 'CHUSQL_PASSWORD', 'WEB_PORT', 'SSH_PORT']}
             env.update(PATH=str(tools) + os.pathsep + env['PATH'], CALL_LOG=str(log))
 
             def invoke(name, *args, extra_env=None):
@@ -59,6 +59,8 @@ if kind == 'git' and args[:2] == ['status', '--porcelain']:
             self.assertNotIn('ADMIN_PASSWORD_HASH', settings)
             self.assertNotIn('PUBLIC_ORIGIN=', settings)
             self.assertNotIn('SITE_ADDRESS=', settings)
+            self.assertIn('WEB_PORT=1741', settings)
+            self.assertIn('SSH_PORT=2222', settings)
             self.assertEqual((root / '.env').stat().st_mode & 0o777, 0o600)
             passwords = [line.split('=', 1)[1] for line in settings.splitlines()
                          if line.startswith(('CHUSQL_ROOT_PASSWORD=', 'CHUSQL_PASSWORD='))]
@@ -97,6 +99,18 @@ if kind == 'git' and args[:2] == ['status', '--porcelain']:
             self.assertEqual(result.returncode, 0, result.stderr)
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertEqual(calls[:3], [['git', 'status', '--porcelain'], ['git', 'pull', '--ff-only'], ['fetch']])
+            for bad_port in ['0', '65536', 'not-a-port']:
+                result = invoke('deploy.sh', extra_env={'WEB_PORT': bad_port})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((root / '.env').read_text(), settings)
+            result = invoke('deploy.sh', extra_env={'WEB_PORT': '01741', 'SSH_PORT': '1741'})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((root / '.env').read_text(), settings)
+            result = invoke('deploy.sh', extra_env={'WEB_PORT': '18081', 'SSH_PORT': '12223'})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            settings = (root / '.env').read_text()
+            self.assertIn('WEB_PORT=18081', settings)
+            self.assertIn('SSH_PORT=12223', settings)
             for purge in [False, True]:
                 log.write_text('')
                 result = invoke('uninstall.sh', *(['--purge'] if purge else []))

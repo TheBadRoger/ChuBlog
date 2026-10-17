@@ -55,7 +55,7 @@ services:
       retries: 3
     logging: *logging
   web:
-    ports: ["127.0.0.1:${WEB_PORT:-1741}:4321"]
+    ports: ["127.0.0.1:${WEB_PORT:-1741}:${WEB_PORT:-1741}"]
     build:
       context: ../apps/web
       args:
@@ -65,6 +65,7 @@ services:
       api: { condition: service_healthy }
     environment:
       API_BASE_URL: http://api:3001
+      PORT: ${WEB_PORT:-1741}
       SSH_PORT: ${SSH_PORT:-2222}
     read_only: true
     tmpfs: ["/tmp:size=16m,noexec,nosuid"]
@@ -73,10 +74,10 @@ services:
     pids_limit: 64
     mem_limit: 256m
     cpus: 1.0
-    networks: [backend]
+    networks: [backend, web-entry]
     restart: unless-stopped
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:4321/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:' + process.env.PORT + '/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -88,7 +89,8 @@ services:
       api: { condition: service_healthy }
     environment:
       CHUBLOG_SSH_CONFIG: /auth/publishers.json
-    ports: ["${SSH_BIND:-0.0.0.0}:${SSH_PORT:-2222}:2222"]
+      SSH_PORT: ${SSH_PORT:-2222}
+    ports: ["${SSH_BIND:-0.0.0.0}:${SSH_PORT:-2222}:${SSH_PORT:-2222}"]
     volumes:
       - ingress:/srv/ingress
       - authorization:/auth:ro
@@ -141,6 +143,7 @@ services:
 
 networks:
   backend: { internal: true }
+  web-entry: {}
   ssh: {}
 volumes:
   content: {}
