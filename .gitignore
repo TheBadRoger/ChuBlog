@@ -11,3 +11,9 @@ __pycache__/
 *.pyc
 external
 /docs/decisions/
+/PLAN.md
+/plan.md
+/TODO.md
+/todo.md
+/Caddyfile
+/deploy/Caddyfile

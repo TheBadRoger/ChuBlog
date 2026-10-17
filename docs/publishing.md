@@ -2,41 +2,29 @@
 
 [返回项目首页](../README.md)
 
-## 用户与发布授权
+## 注册与发布授权
 
-完整接口见 [API 文档](API.md)。
+在网站注册并登录。新用户为 `reader`，不能自行获得发布权。账号密码存储及会话说明见 [API 文档](API.md)。由具有授权权限的既有管理账号将作者设为 `enabled:true`、`role:publisher`，之后才能 clone、fetch 和 push。部署不自动创建管理员。
 
-1. 注册：`POST /api/auth/register`，正文 `{ "username": "alice", "password": "至少12字节的口令" }`。默认角色 `reader`，绝不接受客户端指定角色。`ALLOW_REGISTRATION=false` 可关闭注册。
-2. 登录：`POST /api/auth/login`，相同字段。浏览器保存 HttpOnly Cookie；返回 `csrf`。所有修改请求必须携带站点 `Origin` 和 `X-CSRF-Token`。
-3. 本地生成 `ssh-keygen -t ed25519` 或 `ssh-keygen -t rsa -b 3072`；登录后 `PUT /api/account/ssh-key` 提交 `{ "public_key": "ssh-ed25519 AAAA..." }`，只交公钥。RSA 使用标准 `ssh-rsa AAAA...` 公钥文本，支持 2048–8192 位；实际认证使用 RSA/SHA-256 或 RSA/SHA-512，不启用旧的 SHA-1 签名。见 [OpenSSH 说明](https://www.openssh.com/txt/release-8.8)。
-4. 管理员登录后调用 `PATCH /api/admin/users/alice`，正文 `{ "enabled": true, "role": "publisher" }`。服务器按公钥绑定的用户分配独立仓库。
-5. 此时 SSH 才接受该用户的密钥；`reader`、停用用户、未绑密钥的用户均不能访问 Git。管理员也需登记公钥才能发布。旧 `prefixes` 字段仅为兼容保留，不再用于文章隔离。
-
-- 授权与密钥独立：知道服务器地址、有网站账户、上传了公钥都不足以推送。
-- 设回 `reader` 或 `enabled:false` 会撤回发布授权，并使现有网站会话失效。
-- 禁止管理员停用自己或取消自己的管理角色。
+网站登录会话与 Git 凭据分别使用：浏览器使用 Cookie 与 CSRF，Git 使用 HTTP Basic 账号密码，不使用浏览器 Cookie，也不再登记 SSH 公钥。
 
 ## 克隆个人文章仓库
 
-先通过可信渠道核对服务器主机密钥指纹，再在本机 `~/.ssh/config` 配置连接：
-
-```sshconfig
-Host chublog
-    HostName blog.example.com
-    Port 2222
-    User git
-    IdentityFile ~/.ssh/id_ed25519
-    IdentitiesOnly yes
-```
-
-将域名、端口和私钥路径替换为部署者提供的值。主机密钥检查应保持开启。服务器根据公钥识别作者，不使用 Git 的 author/email 判定身份。
-
 ```sh
-git clone chublog:content.git my-articles
+git clone https://blog.example.com/git/content.git my-articles
 cd my-articles
 ```
 
-每位作者都使用 `content.git` 别名。服务器将别名映射到该作者的独立仓库，并在首次访问时创建裸仓库，作者无需服务器 shell。仓库已有提交时，每轮编辑前先执行 `git pull --ff-only`。
+Git 提示时输入网站用户名和密码。可以使用系统提供的安全凭据管理器保存凭据，避免将密码放进 URL、命令行或仓库配置。不要关闭 TLS 证书验证。Git 的 `credential.helper store` 默认明文存储密码，不建议用于保存网站口令。
+
+所有作者使用同一个链接，服务端根据认证账号映射到各自独立的仓库。即使文章公开，也不允许匿名 clone 或跨作者读取 Git 历史。作者无需创建服务器裸仓库，首次获授权访问会自动建立。提交中的 author/email 不作为认证依据。已有仓库可以执行：
+
+```sh
+git remote set-url origin https://blog.example.com/git/content.git
+git pull --ff-only
+```
+
+取消发布权、封禁或改密码后，下一次 Git 请求会重新检查；旧密码不能继续使用，推送 Hook 也会在验收时复查凭据和授权。公网只接受 HTTPS，本地回环 HTTP 仅用于开发验证。
 
 ## 创建 TOML 索引
 
@@ -65,7 +53,7 @@ public = true
 | `public` | 是否公开，默认 `false` |
 | `entry` | 入口文档名，默认 `main.md` |
 
-作者身份由 SSH 公钥绑定的账户确定。创建时间、首次公开时间和修改时间由服务端生成，以 UTC 时间保存。索引不接受 `author`、`date`、`updated`、精华或权限等额外字段。正文不再使用 Frontmatter。
+作者身份由 HTTPS 账号密码认证的账户确定。创建时间、首次公开时间和修改时间由服务端生成，以 UTC 时间保存。索引不接受 `author`、`date`、`updated`、精华或权限等额外字段。正文不再使用 Frontmatter。
 
 文章 ID 在作者内唯一，允许 1 到 40 位小写字母、数字和中间短横线。目录为 `posts/<目录名>`，目录名最多 80 字节并遵循 slug 规则。ID 和目录名不能使用保留名称，例如 `admin` 或 `api`。同一目录不能登记多次。
 

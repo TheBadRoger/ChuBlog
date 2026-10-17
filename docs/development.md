@@ -70,15 +70,15 @@ python3 scripts/test-deployment.py
 ```sh
 python3 scripts/prepare-deploy.py --sources-env-file deploy/sources.public.env
 python3 scripts/smoke.py --sources-env-file deploy/sources.public.env
-python3 scripts/smoke.py --key-type rsa \
-  --sources-env-file deploy/sources.public.env
+python3 scripts/smoke.py --https --sources-env-file deploy/sources.public.env
 # 安装 Python Playwright 和 Chromium 后，可追加前端真实浏览器验证。
-python3 scripts/smoke.py --key-type rsa --browser-test \
+python3 scripts/smoke.py --browser-test \
   --sources-env-file deploy/sources.public.env
 ```
 
-- 联调使用独立随机命名的 Compose 项目、本机 1741/12222 端口，测试结束清理自己创建的容器与卷。
-- 覆盖真实 SSH 身份与授权、作者间 Git 对象隔离、非法推送、TOML 暂存与修复、多页链接、系统时间、索引删除、ChuSQL 元信息创建/删除、发布撤回、断库阅读、重启与撤权。
+- 联调使用独立随机命名的 Compose 项目、本机 1741 端口，测试结束清理自己创建的容器与卷。
+- 覆盖真实 HTTP Basic 身份与发布授权、作者间 Git 对象隔离、非法推送、TOML 暂存与修复、多页链接、系统时间、索引删除、ChuSQL 元信息创建/删除、发布撤回、断库阅读、重启与撤权。
+- `--https` 使用临时 Caddy、私有测试 CA 和本机 18443 端口，Git/HTTP 客户端显式信任该测试 CA，保持证书校验开启；需要本机可用的 Caddy 镜像。该容器不进入生产编排，测试后删除。
 - 管理员仅由隔离测试脚本写入测试卷作为夹具，生产部署没有管理员环境变量或自动建号步骤。
 - 该测试会拉取基础镜像，需要 Docker 可用。
 

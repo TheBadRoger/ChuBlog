@@ -7,9 +7,8 @@
 | 持久卷 | 内容 |
 | --- | --- |
 | `content` | 私有 Git 缓存 `authors/<用户名>/content.git`、`collection.json`、`users.json`、公开 `published.json` |
-| `authorization` | 发布授权与公钥 |
+| `authorization` | 发布授权与账号状态 |
 | `ingress` | 作者接收仓库 `authors/<用户名>.git` |
-| `ssh-host-keys` | SSH 服务器身份 |
 | `database` / `db-logs` | 数据库数据 / 数据库日志 |
 
 应用日志输出 stdout，由 Docker 分卷轮换，不记录口令、会话或私钥。
@@ -24,7 +23,7 @@
 
 ## 备份与恢复
 
-- 备份必须同时包含正式 Git、用户文件、授权卷、SSH 主机密钥；备份包含密码哈希，须加密并限制权限。
+- 备份必须同时包含正式 Git、用户文件、授权卷；备份包含密码哈希，须加密并限制权限。
 - 接收 Git 可额外镜像备份。
 - 恢复时先停止写入，从同一备份恢复各卷，再启动；不要只恢复 ChuSQL，也不要直接向正式仓库推送。
 - 应用启动加载私有集合快照，并继续从各作者 Git 校验导入。
@@ -38,7 +37,7 @@
 这是不兼容的存储与 URL 变更，不能直接把旧共享 Git 历史提供给新的个人仓库。先停机并加密备份全部卷，再完成以下操作：
 
 1. 从旧共享仓库导出各作者最新的文章文件（含草稿），按原发布前缀及管理员确认的所有权分给作者；不要复制 `.git` 或旧提交历史。
-2. 管理员离线将 `/auth/publishers.json` 的 `repository` 改为 `/srv/ingress/authors`（或自定义 `INGRESS_DIR`），保留用户和公钥授权。新版本 init 服务会创建该根目录。
+2. 管理员离线将 `/auth/publishers.json` 的 `repository` 改为 `/srv/ingress/authors`（或自定义 `INGRESS_DIR`），保留用户和发布授权。新版本 init 服务会创建该根目录。
 3. 将旧 API 数据卷根目录的 `content.git` 移入只对管理员可见的备份位置；旧 `published.json` 同样备份。旧 SSH 共享仓库不再供服务使用，应移出接收卷离线保管。不要删除备份或清空用户数据。
 4. 启动新服务。每位作者重新 clone 自己的空仓库，复制自己的导出文件，将原 Frontmatter 中的标题、简介和标签迁入 `index.toml`，将原发布状态映射到 `public`；为每篇文章指定 ID、目录和入口，移除正文 Frontmatter，整理成一个首次提交并推送。作者和时间由服务端重新记录。
 5. 核对草稿隔离、所有文章、数据库索引和新的 `作者名~ID` URL 后再恢复对外服务。旧版本已被其他人克隆的内容无法收回。
@@ -52,3 +51,9 @@
 停写并备份作者仓库和 `collection.json`，然后把 `index.txt` 改为根目录 `index.toml`。保留原文章 ID 和目录，从正文 Frontmatter 迁移允许的元信息，正文入口不叫 `main.md` 时显式填写 `entry`。删除旧 `index.txt` 和正文 Frontmatter 后，作为一个提交推送。沿用原私有集合快照可保留已有系统时间；旧正文中的日期不会被新版本采纳。
 
 不要提交两种索引并存的仓库。仅根目录的 `index.toml` 在白名单内，其他 TOML 配置仍被拒绝。派生的 `blog_articles` 表若缺少新列，会由索引重建程序重建；该表不得混存评论、授权、审核或站长管理数据。
+
+## 从 SSH 发布迁移到 HTTPS
+
+备份 `content`、`authorization` 和 `ingress` 卷后运行部署脚本。脚本保留网站账号、口令哈希、角色、作者仓库和文章时间；init 会将旧接收卷所有权迁为 API UID 10001。部署的 `--remove-orphans` 清理同项目的旧 SSH 容器，不处理宿主机运维 SSH，也不删除遗留主机密钥卷。
+
+作者只需将个人仓库的 origin 改为 `https://自己的域名/git/content.git`，使用网站账号密码认证。旧 SSH 公钥字段兼容读取但不参与认证，下次保存授权时不再写出。`.env` 的 SSH 端口配置会清理，不再开放文章专用 SSH 端口。服务器现有反向代理仍将整个站点转发到 `127.0.0.1:1741`，无需新增 Git 路由。

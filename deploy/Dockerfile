@@ -53,18 +53,11 @@ COPY deploy/gitconfig /etc/chublog/gitconfig
 RUN groupadd -g 10002 ingress && useradd -u 10001 -g ingress -M -s /usr/sbin/nologin blog
 
 FROM base AS api
-USER 10001:10002
-ENV API_BIND=0.0.0.0:3001 DATA_DIR=/data CHUBLOG_SSH_CONFIG=/auth/publishers.json INGRESS_DIR=/srv/ingress/authors RUST_LOG=info
-ENTRYPOINT ["chublog-api"]
-
-FROM base AS ssh
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-server && rm -rf /var/lib/apt/lists/* && useradd -u 10002 -g ingress -M -d /srv/ingress -s /bin/sh git && passwd -d git
-COPY deploy/sshd_config /etc/ssh/sshd_config
 COPY deploy/hooks /hooks
-COPY deploy/ssh-entrypoint.sh /usr/local/bin/ssh-entrypoint
-COPY deploy/authorized-keys.sh /usr/local/bin/chublog-authorized-keys
-RUN chmod 755 /hooks/pre-receive /usr/local/bin/ssh-entrypoint /usr/local/bin/chublog-authorized-keys
-ENTRYPOINT ["/usr/local/bin/ssh-entrypoint"]
+RUN chmod 755 /hooks/pre-receive
+USER 10001:10002
+ENV API_BIND=0.0.0.0:3001 DATA_DIR=/data CHUBLOG_AUTH_CONFIG=/auth/publishers.json INGRESS_DIR=/srv/ingress/authors RUST_LOG=info
+ENTRYPOINT ["chublog-api"]
 
 FROM base AS init
 COPY deploy/init-volumes.sh /usr/local/bin/init-volumes

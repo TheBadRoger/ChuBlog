@@ -13,7 +13,7 @@
 | `/posts/作者名~文章ID` | 阅读入口文档、图片和文章元信息 |
 | `/posts/作者名~文章ID/页面名.md` | 阅读同文章的其他可达页面，保留相对链接和锚点 |
 | `/login`、`/login?mode=register` | 登录、注册与错误反馈 |
-| `/account` | 公钥登记、密码修改、退出和 Git 发布说明；管理员可授权账户并查看待修复索引 |
+| `/account` | 密码修改、退出和 Git 发布说明；管理员可授权账户并查看待修复索引 |
 
 未实现的评论、互动、内部文章阅读、审核和热度排序不提供占位操作按钮。文章写入继续通过 Git，不提供在线编辑。
 
@@ -28,7 +28,7 @@ cp .env.example .env
 npm run dev
 ```
 
-打开 `http://127.0.0.1:4321`。`API_BASE_URL` 默认 `http://127.0.0.1:3001`，开发和生产均通过 Astro `/api` 路由转发到该地址，账户页面从当前请求读取 SSH 主机名。`SSH_PORT` 控制发布说明中的端口。
+打开 `http://127.0.0.1:4321`。`API_BASE_URL` 默认 `http://127.0.0.1:3001`，开发和生产均通过 Astro `/api` 路由转发到该地址，账户页面从当前请求读取 HTTPS Git 地址。
 
 ```sh
 npm run build
@@ -52,11 +52,11 @@ Markdown 禁用原始 HTML，并在渲染后清理输出。文章内链接只映
 ```sh
 python3 -m pip install playwright
 python3 -m playwright install chromium
-python3 scripts/smoke.py --key-type rsa --browser-test \
+python3 scripts/smoke.py --browser-test \
   --sources-env-file deploy/sources.public.env
 ```
 
-该命令使用隔离的 Docker 项目，验证真实注册登录、密码修改、公钥保存、站长授权、多页阅读及手机布局，测试后清理自己创建的容器与卷。截图默认放在 `/tmp/chublog-web-screenshots`。系统缺少浏览器库时，按 Playwright 安装说明准备运行环境。
+该命令使用隔离的 Docker 项目，验证真实注册登录、密码修改、HTTPS Git 指引、站长授权、多页阅读及手机布局，测试后清理自己创建的容器与卷。截图默认放在 `/tmp/chublog-web-screenshots`。系统缺少浏览器库时，按 Playwright 安装说明准备运行环境。
 
 ## 项目技能
 

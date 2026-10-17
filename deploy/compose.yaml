@@ -38,9 +38,9 @@ services:
     volumes:
       - content:/data
       - authorization:/auth
-      - ingress:/srv/ingress:ro
+      - ingress:/srv/ingress
     read_only: true
-    tmpfs: ["/tmp:size=16m,noexec,nosuid"]
+    tmpfs: ["/tmp:size=128m,noexec,nosuid"]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 128
@@ -66,7 +66,6 @@ services:
     environment:
       API_BASE_URL: http://api:3001
       PORT: ${WEB_PORT:-1741}
-      SSH_PORT: ${SSH_PORT:-2222}
     read_only: true
     tmpfs: ["/tmp:size=16m,noexec,nosuid"]
     cap_drop: [ALL]
@@ -81,30 +80,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-    logging: *logging
-  ssh:
-    build: { <<: *backend-build, target: ssh }
-    depends_on:
-      init: { condition: service_completed_successfully }
-      api: { condition: service_healthy }
-    environment:
-      CHUBLOG_SSH_CONFIG: /auth/publishers.json
-      SSH_PORT: ${SSH_PORT:-2222}
-    ports: ["${SSH_BIND:-0.0.0.0}:${SSH_PORT:-2222}:${SSH_PORT:-2222}"]
-    volumes:
-      - ingress:/srv/ingress
-      - authorization:/auth:ro
-      - ssh-host-keys:/host-keys
-    read_only: true
-    tmpfs: ["/run:size=8m,noexec,nosuid", "/tmp:size=16m,noexec,nosuid"]
-    cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, SYS_CHROOT]
-    security_opt: [no-new-privileges:true]
-    pids_limit: 64
-    mem_limit: 256m
-    cpus: 1.0
-    networks: [ssh]
-    restart: unless-stopped
     logging: *logging
   db:
     build: { <<: *backend-build, target: database }
@@ -144,11 +119,9 @@ services:
 networks:
   backend: { internal: true }
   web-entry: {}
-  ssh: {}
 volumes:
   content: {}
   ingress: {}
   authorization: {}
-  ssh-host-keys: {}
   database: {}
   db-logs: {}

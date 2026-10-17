@@ -1,7 +1,10 @@
 mod accounts;
+mod accounts_db;
 mod content;
+mod database;
+mod git_http;
+mod git_store;
 mod index;
-mod ssh;
 
 use anyhow::{Context, Result, ensure};
 use axum::{
@@ -45,10 +48,11 @@ fn internal(error: impl std::fmt::Display) -> ApiError {
 }
 struct App {
     data: PathBuf,
-    ssh_config: PathBuf,
+    repository: PathBuf,
     registration: bool,
     accounts: Mutex<accounts::Accounts>,
     hash_slots: Arc<Semaphore>,
+    git_slots: Arc<Semaphore>,
     snapshot: RwLock<Snapshot>,
     indexed: RwLock<Option<String>>,
     views: AtomicU64,
@@ -203,12 +207,12 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/auth/login", post(accounts::login))
         .route("/api/auth/logout", post(accounts::logout))
         .route("/api/account", get(accounts::me))
-        .route("/api/account/ssh-key", put(accounts::set_key))
         .route("/api/account/password", put(accounts::change_password))
         .route("/api/admin/users", get(accounts::users))
         .route("/api/admin/users/{username}", patch(accounts::grant))
         .route("/api/admin/status", get(admin_status))
         .layer(DefaultBodyLimit::max(8 * 1024))
+        .route("/git/{*path}", get(git_http::handle).post(git_http::handle))
         .layer(axum::middleware::from_fn(
             |request: axum::extract::Request, next: axum::middleware::Next| async move {
                 let mut response = next.run(request).await;
@@ -232,16 +236,8 @@ fn router(app: Arc<App>) -> Router {
 }
 async fn refresh(app: &App, source: &std::path::Path) -> Result<()> {
     let current = app.snapshot.read().await.clone();
-    let identities: Vec<_> = app
-        .accounts
-        .lock()
-        .await
-        .grants
-        .publishers
-        .keys()
-        .cloned()
-        .collect();
-    let snapshot = ssh::import_authors(&app.data, source, &current, &identities).await?;
+    let identities = accounts::store(app).await.names().await?;
+    let snapshot = git_store::import_authors(&app.data, source, &current, &identities).await?;
     if snapshot.commit != current.commit || snapshot.pending != current.pending {
         accounts::atomic(
             &app.data.join("collection.json"),
@@ -266,11 +262,7 @@ async fn main() -> Result<()> {
         .init();
     let command = std::env::args().nth(1);
     match command.as_deref() {
-        Some("ssh-gate") => {
-            return ssh::gate(&std::env::args().nth(2).context("缺少发布者身份")?).await;
-        }
-        Some("pre-receive") => return ssh::pre_receive().await,
-        Some("authorized-keys") => return ssh::authorized_keys(),
+        Some("pre-receive") => return git_store::pre_receive().await,
         Some("provision-db") => return index::provision().await,
         Some("hash-password") => {
             use std::io::Read;
@@ -319,21 +311,24 @@ async fn main() -> Result<()> {
         std::env::var("INGRESS_DIR").unwrap_or_else(|_| "/srv/ingress/authors".into()),
     );
     ensure!(source.is_absolute(), "INGRESS_DIR 必须是绝对路径");
-    let ssh_config = PathBuf::from(
-        std::env::var("CHUBLOG_SSH_CONFIG")
+    let authorization_config = PathBuf::from(
+        std::env::var("CHUBLOG_AUTH_CONFIG")
             .unwrap_or_else(|_| data.join("publishers.json").to_string_lossy().into_owned()),
     );
-    let accounts = accounts::load(&data, &ssh_config, source.clone()).await?;
-    ensure!(
-        accounts.grants.repository == source,
-        "授权配置仍指向旧共享仓库或与 INGRESS_DIR 不一致，请先按 README 迁移授权配置"
-    );
+    let accounts = accounts::load(
+        &data,
+        &authorization_config,
+        source.clone(),
+        accounts_db::Store::from_env()?,
+    )
+    .await?;
     let app = Arc::new(App {
         data,
-        ssh_config,
+        repository: source.clone(),
         registration: std::env::var("ALLOW_REGISTRATION").as_deref() == Ok("true"),
         accounts: Mutex::new(accounts),
         hash_slots: Arc::new(Semaphore::new(2)),
+        git_slots: Arc::new(Semaphore::new(1)),
         snapshot: RwLock::new(snapshot),
         indexed: RwLock::new(None),
         views: AtomicU64::new(0),

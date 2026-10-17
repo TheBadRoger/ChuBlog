@@ -4,7 +4,7 @@
 
 ## 请求约定
 
-- 全部正文使用 JSON。
+- 普通账户和阅读接口使用 JSON；Git Smart HTTP 使用其标准二进制协议。
 - 同源 `Origin` 必须与可信反向代理传入的原始协议、主机及端口完全一致，例如 `https://blog.example.com`；无需域名环境变量。转发头的信任边界见[部署说明](deployment.md)。
 - 响应含 `Cache-Control: no-store`。
 - 登录 Cookie 为 `HttpOnly; SameSite=Strict; Secure`，仅 localhost HTTP 开发场景省略 Secure。
@@ -23,9 +23,8 @@
 | POST | `/api/auth/login` | 公共 + Origin；`{username,password}`，返回 `{username,role,csrf}` 及 Cookie |
 | POST | `/api/auth/logout` | 登录 + Origin + CSRF；使会话失效并清除 Cookie |
 | GET | `/api/account` | 登录；返回自己的 `{username,permissions,csrf}`，不含口令哈希 |
-| PUT | `/api/account/ssh-key` | 登录 + Origin + CSRF；`{public_key}`，替换自己的唯一 Ed25519 或 RSA 公钥（RSA 2048–8192 位） |
 | PUT | `/api/account/password` | 登录 + Origin + CSRF；`{old_password,new_password}`，成功后全部会话失效 |
-| GET | `/api/admin/users` | 管理员；返回用户启用状态、角色、前缀及公钥，不含哈希 |
+| GET | `/api/admin/users` | 管理员；返回用户启用状态、角色及兼容前缀，不含哈希 |
 | PATCH | `/api/admin/users/:username` | 管理员 + Origin + CSRF；`{enabled,role}`；兼容可选的旧 `prefixes` 字段 |
 | GET | `/api/admin/status` | 管理员；`{commit,total_posts,drafts,indexed_commit,pending}` |
 
@@ -33,11 +32,11 @@
 
 - 角色：`reader | publisher | admin`。
 - 网站管理员与数据库账号、OS 用户不是同一个系统。
-- 发布角色仍需已登记公钥才能使用 SSH。
+- Git 访问独立验证网站账号密码及发布角色，不依赖浏览器登录会话。
 - 每个账户使用自己的仓库，旧前缀字段不再承担授权作用。
 - 网站登录不产生 Git 访问凭证。
 
-用户名：3–32 位小写字母、数字、短横线，以字母开头；口令：12–1024 字节。旧前缀字段仅兼容接收，若传入仍按原格式校验。注册不接受 `role` 等额外字段。公钥不能与别的用户重复。
+用户名：3–32 位小写字母、数字、短横线，以字母开头；口令：12–1024 字节。旧前缀字段仅兼容接收，若传入仍按原格式校验。注册不接受 `role` 等额外字段。
 
 ## 修改请求
 
@@ -53,7 +52,7 @@
 
 ## 文章发布边界
 
-文章写入、上传、在线预览、后台发布/删除接口当前都不存在。文章修改和权限审批分开：管理员只能通过账号 API 批准身份与发布资格；文章在作者本机编辑，通过 SSH Git 发布。
+文章写入、上传、在线预览、后台发布/删除接口当前都不存在。文章修改和权限审批分开：管理员只能通过账号 API 批准身份与发布资格；文章在作者本机编辑，通过 HTTPS Git 发布。
 
 ## 文章与资源
 
@@ -70,3 +69,24 @@
 `/api/admin/status` 的 `commit` 和 `indexed_commit` 为整个生效作者集合的版本摘要，不是单个作者的 Git HEAD。`pending` 的格式为 `{作者名: {commit, reason}}`，仅管理员可读。TOML 无效时保留原生效版本及其数据库记录，暂存状态跨进程重启保存；修复后的正常推送会替换暂存状态并重新导入。
 
 作者的源提交记录在数据库 `blog_articles.git_commit` 和私有集合快照中。数据库失败时 Git 接收与已导入文章阅读仍可继续，恢复后自动重建。站长审核暂未启用。
+
+## Git Smart HTTP
+
+入口为 `/git/content.git`，仅接受以下协议请求：
+
+| 方法 | 路径 |
+| --- | --- |
+| GET | `/git/content.git/info/refs?service=git-upload-pack` |
+| GET | `/git/content.git/info/refs?service=git-receive-pack` |
+| POST | `/git/content.git/git-upload-pack` |
+| POST | `/git/content.git/git-receive-pack` |
+
+每个请求均验证 HTTP Basic 网站账号密码和独立发布授权。缺少或错误凭据返回 `401` 与 `WWW-Authenticate: Basic`；未获发布权或停用账户返回 `403`；不支持的仓库路径返回 `404`。不提供匿名或 dumb HTTP 文件读取，也不接受浏览器 Cookie 代替 Git 密码。公网必须由可信代理提供 HTTPS。
+
+Rust 实现 HTTP 认证、固定路径映射、CGI 环境隔离和响应解析，调用 Git 自带 `git http-backend` 执行 Smart HTTP 协议。请求内容不作为 shell 命令执行。失败响应不返回口令或进程诊断。
+
+## 账户数据现状
+
+账号与 Argon2id 加盐哈希保存在 `/data/users.json`（权限 600），角色与启用状态保存在 `/auth/publishers.json`。注册限制用户名为 3–32 位小写字母、数字和短横线，以字母开头；密码为 12–1024 字节。注册只创建普通用户。用户数据库化与扩展角色仍为待办，ChuSQL 当前只承担文章派生索引。
+
+网站登录使用随机 256 位会话令牌、HttpOnly/SameSite=Strict Cookie，公网 HTTPS 下附带 Secure。会话仅存内存，一小时到期，重启后失效；密码修改和撤权会注销相关会话。修改操作另须通过 Origin 和 CSRF 校验。

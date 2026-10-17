@@ -13,7 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 DB_KEYS = ('CHUSQL_ROOT_PASSWORD', 'CHUSQL_PASSWORD')
 RETIRED_KEYS = ('ADMIN_USERNAME', 'ADMIN_PASSWORD_HASH', 'PUBLIC_ORIGIN', 'SITE_ADDRESS',
-                'SITE_TITLE', 'HTTP_PORT', 'HTTPS_PORT', 'HTTP_BIND')
+                'SITE_TITLE', 'HTTP_PORT', 'HTTPS_PORT', 'HTTP_BIND', 'SSH_PORT', 'SSH_BIND')
 
 
 def read_config(path):
@@ -42,7 +42,7 @@ def configure(path):
             if values.get(key) and not values[key].startswith('replace-with-'):
                 raise RuntimeError(f'{key} 环境覆盖与已保存口令不同，已停止以避免破坏现有数据库访问。')
             changes[key] = value
-    for key, default in [('WEB_PORT', '1741'), ('SSH_PORT', '2222')]:
+    for key, default in [('WEB_PORT', '1741')]:
         value = os.environ.get(key, values.get(key, default))
         if not value.isascii() or not value.isdigit() or not 1 <= int(value) <= 65535:
             raise RuntimeError(f'{key} 必须是 1 到 65535 之间的端口号。')
@@ -52,8 +52,6 @@ def configure(path):
     effective = {**values, **changes}
     if os.environ.get(DB_KEYS[0], effective.get(DB_KEYS[0])) == os.environ.get(DB_KEYS[1], effective.get(DB_KEYS[1])):
         raise RuntimeError('数据库 root 与博客数据库账号必须使用不同口令。')
-    if effective.get('WEB_PORT') == effective.get('SSH_PORT'):
-        raise RuntimeError('WEB_PORT 与 SSH_PORT 不能相同。')
     seen = set()
     lines = []
     for line in text.splitlines():
@@ -107,7 +105,7 @@ def deploy(args):
     run(build)
     compose = compose_command(args, args.env_file)
     print('启动数据库并初始化博客数据库与专用账号…', flush=True)
-    run(compose + ['up', '-d', '--no-build', 'db'])
+    run(compose + ['up', '-d', '--no-build', '--remove-orphans', 'db'])
     deadline = time.monotonic() + 120
     last_error = ''
     while time.monotonic() < deadline:
@@ -125,7 +123,7 @@ def deploy(args):
                 if secret:
                     last_error = last_error.replace(secret, '***')
         raise RuntimeError('数据库初始化失败，部署未完成。检查数据库日志和已有口令。\n' + last_error)
-    print('启动博客与 SSH…', flush=True)
+    print('启动博客与 HTTPS Git 接收服务…', flush=True)
     run(compose + ['up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90'])
     port = os.environ.get('WEB_PORT', read_config(args.env_file).get('WEB_PORT', '1741'))
     print(f'部署完成：http://127.0.0.1:{port}\n不创建初始管理员；注册账户默认为普通用户。', flush=True)

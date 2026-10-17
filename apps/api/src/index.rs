@@ -1,77 +1,28 @@
 use crate::content::{Snapshot, Status};
 use anyhow::{Context, Result, ensure};
-use chusql_driver::{Client, Options, Query};
-use std::time::Duration;
+use chusql_driver::{Client, Query};
 
 async fn connect() -> Result<Client> {
-    let database = std::env::var("CHUSQL_DATABASE").context("未配置 ChuSQL")?;
-    ensure!(
-        !database.is_empty()
-            && !database.starts_with(|c: char| c.is_ascii_digit())
-            && database
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
-        "数据库名称无效"
-    );
-    let db = Client::connect_with_options(
-        std::env::var("CHUSQL_ADDRESS").unwrap_or_else(|_| "127.0.0.1:7777".into()),
-        &std::env::var("CHUSQL_USER")?,
-        &std::env::var("CHUSQL_PASSWORD")?,
-        Options {
-            timeout: Duration::from_secs(3),
-            max_response_bytes: 1024 * 1024,
-        },
-    )
-    .await?;
-    db.query(&format!("USE {database}")).await?;
-    Ok(db)
+    crate::database::Database::from_env()?.connect().await
 }
 
 pub async fn rebuild(snapshot: &Snapshot) -> Result<()> {
-    let db = connect().await?;
-    // Probe before creating: ChuSQL does not promise IF NOT EXISTS syntax.
+    rebuild_with_db(snapshot, connect().await?).await
+}
+
+pub(crate) async fn rebuild_with_db(snapshot: &Snapshot, db: Client) -> Result<()> {
     if db
-        .query("SELECT slug FROM blog_posts LIMIT 1")
+        .query("SELECT id FROM blog_articles LIMIT 1")
         .await
-        .is_err()
-    {
-        db.query("CREATE TABLE blog_posts (slug TEXT PRIMARY KEY, title TEXT, description TEXT, published_at TEXT, updated_at TEXT, path TEXT, git_commit TEXT)").await?;
-    }
-    if db
-        .query("SELECT slug FROM blog_tags LIMIT 1")
-        .await
-        .is_err()
-    {
-        db.query("CREATE TABLE blog_tags (slug TEXT, tag TEXT, git_commit TEXT)")
-            .await?;
-    }
-    if db
-        .query("SELECT id, created_at FROM blog_articles LIMIT 1")
-        .await
-        .is_err()
-    {
-        // Only this rebuildable table changes shape; no identity/interaction data lives here.
-        if db
-            .query("SELECT id FROM blog_articles LIMIT 1")
+        .is_ok()
+        && db
+            .query("SELECT created_at FROM blog_articles LIMIT 1")
             .await
-            .is_ok()
-        {
-            db.query("DROP TABLE blog_articles").await?;
-        }
-        db.query("CREATE TABLE blog_articles (id TEXT PRIMARY KEY, author TEXT, article_id TEXT, title TEXT, description TEXT, status TEXT, created_at TEXT, published_at TEXT, updated_at TEXT, path TEXT, format TEXT, cover TEXT, entry TEXT, git_commit TEXT)").await?;
-    }
-    if db.query("SELECT id FROM blog_pages LIMIT 1").await.is_err() {
-        db.query("CREATE TABLE blog_pages (id TEXT, name TEXT, path TEXT, git_commit TEXT)")
-            .await?;
-    }
-    if db
-        .query("SELECT id FROM blog_article_tags LIMIT 1")
-        .await
-        .is_err()
+            .is_err()
     {
-        db.query("CREATE TABLE blog_article_tags (id TEXT, tag TEXT)")
-            .await?;
+        crate::database::execute_script(&db, crate::database::LEGACY_ARTICLES_SQL).await?;
     }
+    crate::database::ensure_tables(&db, crate::database::ARTICLES_SQL).await?;
     db.query("BEGIN").await?;
     db.query("DELETE FROM blog_pages").await?;
     db.query("DELETE FROM blog_article_tags").await?;
@@ -151,7 +102,7 @@ pub async fn provision() -> Result<()> {
     )
     .await?;
     if db.query("USE chublog").await.is_err() {
-        db.query("CREATE DATABASE chublog").await?;
+        crate::database::execute_script(&db, crate::database::CREATE_DATABASE_SQL).await?;
     }
     let roles = db.query("SHOW ROLES").await?;
     ensure!(!roles.truncated, "身份列表被截断，请人工检查数据库初始化");
@@ -172,6 +123,10 @@ pub async fn provision() -> Result<()> {
         .await?;
     db.query("GRANT CONNECT, CREATE ON DATABASE chublog TO chublog_index")
         .await?;
+    db.close().await;
+    let db = connect().await?;
+    crate::database::ensure_tables(&db, crate::database::ACCOUNTS_SQL).await?;
+    crate::database::ensure_tables(&db, crate::database::ARTICLES_SQL).await?;
     db.close().await;
     Ok(())
 }

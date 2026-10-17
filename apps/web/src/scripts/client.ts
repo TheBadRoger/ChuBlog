@@ -1,6 +1,6 @@
 export {};
 type Role = 'reader' | 'publisher' | 'admin';
-interface Grant { enabled: boolean; role: Role; ssh_key: string | null }
+interface Grant { enabled: boolean; role: Role }
 interface Account { username: string; permissions: Grant; csrf: string }
 let csrf: string | undefined;
 const roles: Record<Role, string> = { reader: '普通用户', publisher: '作者', admin: '管理员' };
@@ -59,12 +59,6 @@ formAction('auth-form', async (data, form) => {
   location.assign('/account');
 });
 
-formAction('key-form', async (data, form) => {
-  const key = value(data, 'public_key').trim();
-  if (key.includes('PRIVATE KEY')) throw new Error('这里需要 .pub 公钥，请勿提交私钥。');
-  await api('/api/account/ssh-key', 'PUT', { public_key: key });
-  showStatus(form.querySelector('.form-status'), '公钥已保存。发布仍需站长授权。');
-});
 formAction('password-form', async (data, form) => {
   const password = value(data, 'new_password');
   checkPassword(password);
@@ -139,10 +133,9 @@ async function loadAccount() {
     showStatus(document.querySelector('#account-status'), '');
     document.querySelector('#account-name')!.textContent = account.username;
     document.querySelector('#account-role')!.textContent = roles[account.permissions.role];
-    document.querySelector<HTMLTextAreaElement>('#public-key')!.value = account.permissions.ssh_key || '';
     document.querySelector('#publish-status')!.textContent = account.permissions.role === 'reader'
-      ? '发布文章需要登记公钥，并由站长授予发布权限。'
-      : account.permissions.ssh_key ? '已获得发布权限，可以使用下方配置连接个人仓库。' : '已获得发布权限，登记公钥后即可连接个人仓库。';
+      ? '发布和克隆文章仓库需要由站长授予发布权限。'
+      : '已获得发布权限，可以使用网站账号密码访问个人文章仓库。';
     if (account.permissions.role === 'admin') await loadAdmin(account);
   } catch (error) {
     if (!content) return;

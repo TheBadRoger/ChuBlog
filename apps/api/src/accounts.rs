@@ -1,4 +1,4 @@
-use crate::{ApiError, ApiResult, App, bad, internal, origin, ssh};
+use crate::{ApiError, ApiResult, App, bad, internal, origin};
 use anyhow::{Context, Result, ensure};
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
@@ -36,22 +36,21 @@ pub struct Grant {
     pub role: Role,
     #[serde(default)]
     pub prefixes: Vec<String>,
-    pub ssh_key: Option<String>,
+    #[serde(default, rename = "ssh_key", skip_serializing)]
+    pub _legacy_ssh_key: Option<String>,
 }
-#[derive(Serialize, Deserialize)]
-struct Credential {
-    hash: String,
-}
+#[derive(Clone)]
 struct Session {
-    username: String,
+    user: crate::accounts_db::User,
     csrf: String,
     expires: Instant,
 }
 pub struct Accounts {
-    credentials: BTreeMap<String, Credential>,
-    pub grants: ssh::Config,
+    pub store: crate::accounts_db::Store,
     sessions: BTreeMap<String, Session>,
+    dummy_hash: String,
     attempts: VecDeque<Instant>,
+    git_failures: VecDeque<Instant>,
     changes: VecDeque<Instant>,
 }
 
@@ -73,7 +72,7 @@ pub async fn atomic(path: &FilePath, bytes: &[u8], mode: u32) -> Result<()> {
     directory.sync_all()?;
     Ok(())
 }
-fn username(value: &str) -> Result<()> {
+pub(crate) fn username(value: &str) -> Result<()> {
     ensure!(
         (3..=32).contains(&value.len())
             && value
@@ -105,28 +104,81 @@ pub async fn load(
     data: &FilePath,
     config: &FilePath,
     repository: std::path::PathBuf,
+    store: crate::accounts_db::Store,
 ) -> Result<Accounts> {
-    let credentials: BTreeMap<String, Credential> =
-        match tokio::fs::read(data.join("users.json")).await {
-            Ok(bytes) => serde_json::from_slice(&bytes)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(error) => return Err(error.into()),
-        };
-    let grants = match tokio::fs::read(config).await {
-        Ok(bytes) => serde_json::from_slice(&bytes)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ssh::Config {
-            repository,
-            publishers: BTreeMap::new(),
-        },
-        Err(error) => return Err(error.into()),
-    };
+    store.initialize(data, config, &repository).await?;
     Ok(Accounts {
-        credentials,
-        grants,
+        store,
         sessions: BTreeMap::new(),
+        dummy_hash: hash_password(token()).await?,
         attempts: VecDeque::new(),
+        git_failures: VecDeque::new(),
         changes: VecDeque::new(),
     })
+}
+pub async fn store(app: &App) -> crate::accounts_db::Store {
+    app.accounts.lock().await.store.clone()
+}
+pub fn database_error(error: crate::accounts_db::Error) -> ApiError {
+    use crate::accounts_db::Error;
+    let status = match error {
+        Error::Conflict => StatusCode::CONFLICT,
+        Error::NotFound => StatusCode::NOT_FOUND,
+        Error::Denied => StatusCode::FORBIDDEN,
+        Error::Quota => StatusCode::BAD_REQUEST,
+        Error::Database(_) => {
+            tracing::error!(
+                action = "account_database_unavailable",
+                "账户数据库操作失败"
+            );
+            return ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "账户数据库暂时不可用".into(),
+            );
+        }
+    };
+    ApiError(status, error.to_string())
+}
+async fn authenticate(
+    app: &App,
+    name: &str,
+    password: String,
+) -> ApiResult<crate::accounts_db::User> {
+    let store = store(app).await;
+    let user = store.user(name).await.map_err(database_error)?;
+    let hash = match &user {
+        Some(user) => user.hash.clone(),
+        None => app.accounts.lock().await.dummy_hash.clone(),
+    };
+    let permit = app
+        .hash_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError(StatusCode::TOO_MANY_REQUESTS, "认证服务繁忙".into()))?;
+    let verified = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        PasswordHash::new(&hash).ok().is_some_and(|hash| {
+            Argon2::default()
+                .verify_password(password.as_bytes(), &hash)
+                .is_ok()
+        })
+    })
+    .await
+    .map_err(internal)?;
+    let denied = || ApiError(StatusCode::UNAUTHORIZED, "登录失败".into());
+    let expected = user.filter(|_| verified).ok_or_else(denied)?;
+    let current = store
+        .user(name)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(denied)?;
+    if !expected.same_revision(&current) {
+        return Err(denied());
+    }
+    if current.level == crate::accounts_db::Level::Banned {
+        return Err(ApiError(StatusCode::FORBIDDEN, "用户已停用".into()));
+    }
+    Ok(current)
 }
 
 fn rate(accounts: &mut Accounts) -> ApiResult<()> {
@@ -158,7 +210,7 @@ pub async fn authorize(
     headers: &HeaderMap,
     change: bool,
     admin: bool,
-) -> ApiResult<String> {
+) -> ApiResult<crate::accounts_db::User> {
     let cookie = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
@@ -166,40 +218,45 @@ pub async fn authorize(
         .split(';')
         .filter_map(|p| p.trim().split_once('='))
         .find(|(name, _)| *name == "chublog_session")
-        .map(|(_, v)| v)
+        .map(|(_, value)| value)
         .unwrap_or("");
-    let mut accounts = app.accounts.lock().await;
-    let session = accounts
+    let session = app
+        .accounts
+        .lock()
+        .await
         .sessions
         .get(cookie)
         .filter(|s| s.expires > Instant::now())
+        .cloned()
         .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "请先登录".into()))?;
-    let grant = accounts
-        .grants
-        .publishers
-        .get(&session.username)
-        .filter(|g| g.enabled)
-        .ok_or_else(|| ApiError(StatusCode::FORBIDDEN, "用户已停用".into()))?;
-    if admin && grant.role != Role::Admin {
+    let user = store(app)
+        .await
+        .user(&session.user.username)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "会话已失效".into()))?;
+    if user.level == crate::accounts_db::Level::Banned {
+        return Err(ApiError(StatusCode::FORBIDDEN, "用户已停用".into()));
+    }
+    if !user.same_revision(&session.user) {
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "会话已失效，请重新登录".into(),
+        ));
+    }
+    if admin && user.level != crate::accounts_db::Level::Master {
         return Err(ApiError(StatusCode::FORBIDDEN, "需要管理员权限".into()));
     }
     if change {
         origin(headers)?;
-        if headers.get("x-csrf-token").and_then(|v| v.to_str().ok()) != Some(session.csrf.as_str())
-        {
+        if headers.get("x-csrf-token").and_then(|v| v.to_str().ok()) != Some(&session.csrf) {
             return Err(ApiError(StatusCode::FORBIDDEN, "CSRF 校验失败".into()));
         }
-    }
-    let username = session.username.clone();
-    if change {
+        let mut accounts = app.accounts.lock().await;
         let now = Instant::now();
-        while accounts
+        accounts
             .changes
-            .front()
-            .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
-        {
-            accounts.changes.pop_front();
-        }
+            .retain(|t| now.duration_since(*t) < Duration::from_secs(60));
         if accounts.changes.len() >= 60 {
             return Err(ApiError(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -208,7 +265,7 @@ pub async fn authorize(
         }
         accounts.changes.push_back(now);
     }
-    Ok(username)
+    Ok(user)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -227,59 +284,22 @@ pub async fn register(
     }
     username(&input.username).map_err(bad)?;
     password(&input.password).map_err(bad)?;
-    {
-        let mut accounts = app.accounts.lock().await;
-        rate(&mut accounts)?;
-        if accounts.credentials.len() >= 1000 {
-            return Err(bad("用户配额已满"));
-        }
-    }
+    rate(&mut *app.accounts.lock().await)?;
     let _permit = app
         .hash_slots
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError(StatusCode::TOO_MANY_REQUESTS, "认证服务繁忙".into()))?;
     let hash = hash_password(input.password).await.map_err(internal)?;
-    let mut accounts = app.accounts.lock().await;
-    if accounts.credentials.contains_key(&input.username) {
-        return Err(ApiError(StatusCode::CONFLICT, "用户名不可用".into()));
-    }
-    if accounts.credentials.len() >= 1000 {
-        return Err(bad("用户配额已满"));
-    }
-    let mut grants = accounts.grants.clone();
-    grants.publishers.insert(
-        input.username.clone(),
-        Grant {
-            enabled: true,
-            role: Role::Reader,
-            prefixes: vec![],
-            ssh_key: None,
-        },
-    );
-    atomic(
-        &app.ssh_config,
-        &serde_json::to_vec_pretty(&grants).map_err(internal)?,
-        0o644,
-    )
-    .await
-    .map_err(internal)?;
-    accounts.grants = grants;
-    accounts
-        .credentials
-        .insert(input.username.clone(), Credential { hash });
-    if let Err(error) = atomic(
-        &app.data.join("users.json"),
-        &serde_json::to_vec(&accounts.credentials).map_err(internal)?,
-        0o600,
-    )
-    .await
-    {
-        accounts.credentials.remove(&input.username);
-        return Err(internal(error));
-    }
-    tracing::info!(action = "register", user = %input.username);
-    Ok(Json(json!({"username": input.username, "role": "reader"})))
+    let user = store(&app)
+        .await
+        .register(&input.username, &hash)
+        .await
+        .map_err(database_error)?;
+    tracing::info!(action = "register", user = %user.username);
+    let mut view = user.view();
+    view["role"] = json!(user.level.grant().role);
+    Ok(Json(view))
 }
 pub async fn login(
     State(app): State<Arc<App>>,
@@ -289,46 +309,18 @@ pub async fn login(
     let secure = origin(&headers)?;
     username(&input.username).map_err(bad)?;
     password(&input.password).map_err(bad)?;
-    let hash = {
-        let mut accounts = app.accounts.lock().await;
-        rate(&mut accounts)?;
-        accounts
-            .credentials
-            .get(&input.username)
-            .or_else(|| accounts.credentials.values().next())
-            .map(|c| c.hash.clone())
-            .ok_or_else(|| internal("无管理员"))?
-    };
-    let _permit = app
-        .hash_slots
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ApiError(StatusCode::TOO_MANY_REQUESTS, "认证服务繁忙".into()))?;
-    let verified = tokio::task::spawn_blocking(move || {
-        PasswordHash::new(&hash).ok().is_some_and(|h| {
-            Argon2::default()
-                .verify_password(input.password.as_bytes(), &h)
-                .is_ok()
-        })
-    })
-    .await
-    .map_err(internal)?;
+    rate(&mut *app.accounts.lock().await)?;
+    let user = authenticate(&app, &input.username, input.password).await?;
     let mut accounts = app.accounts.lock().await;
-    if !verified
-        || !accounts.credentials.contains_key(&input.username)
-        || !accounts
-            .grants
-            .publishers
-            .get(&input.username)
-            .is_some_and(|g| g.enabled)
-    {
-        tracing::warn!(action = "login_failed", user = %input.username);
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "登录失败".into()));
-    }
+    let user = accounts
+        .store
+        .logged_in(&user)
+        .await
+        .map_err(database_error)?;
     let now = Instant::now();
     accounts
         .sessions
-        .retain(|_, s| s.expires > now && s.username != input.username);
+        .retain(|_, session| session.expires > now && session.user.id != user.id);
     if accounts.sessions.len() >= 1000 {
         return Err(bad("会话配额已满"));
     }
@@ -337,7 +329,7 @@ pub async fn login(
     accounts.sessions.insert(
         id.clone(),
         Session {
-            username: input.username.clone(),
+            user: user.clone(),
             csrf: csrf.clone(),
             expires: now + Duration::from_secs(3600),
         },
@@ -346,34 +338,38 @@ pub async fn login(
         "chublog_session={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600{}",
         if secure { "; Secure" } else { "" }
     );
-    let mut response = Json(json!({"csrf": csrf, "username": input.username, "role": accounts.grants.publishers[&input.username].role})).into_response();
+    let mut view = user.view();
+    view["role"] = json!(user.level.grant().role);
+    view["csrf"] = json!(csrf);
+    let mut response = Json(view).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&cookie).map_err(internal)?,
     );
-    tracing::info!(action = "login", user = %input.username);
+    tracing::info!(action = "login", user = %user.username);
     Ok(response)
 }
 pub async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Json<Value>> {
-    let name = authorize(&app, &headers, false, false).await?;
+    let user = authorize(&app, &headers, false, false).await?;
     let accounts = app.accounts.lock().await;
     let csrf = accounts
         .sessions
         .values()
-        .find(|s| s.username == name)
+        .find(|s| s.user.id == user.id)
         .map(|s| &s.csrf);
-    Ok(Json(
-        json!({"username": name, "permissions": accounts.grants.publishers[&name], "csrf": csrf}),
-    ))
+    let mut view = user.view();
+    view["permissions"] = json!(user.level.grant());
+    view["csrf"] = json!(csrf);
+    Ok(Json(view))
 }
 pub async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Response> {
     let secure = origin(&headers)?;
-    let name = authorize(&app, &headers, true, false).await?;
+    let user = authorize(&app, &headers, true, false).await?;
     app.accounts
         .lock()
         .await
         .sessions
-        .retain(|_, s| s.username != name);
+        .retain(|_, session| session.user.id != user.id);
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -385,84 +381,21 @@ pub async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResul
     );
     Ok(response)
 }
-pub fn public_key(value: &str) -> Result<String> {
-    ensure!(
-        value.len() <= 4096 && !value.contains(['\n', '\r']),
-        "公钥格式无效"
-    );
-    let key = ssh_key::PublicKey::from_openssh(value)
-        .context("SSH 公钥格式无效，禁止 authorized_keys 选项")?;
-    match key.key_data() {
-        ssh_key::public::KeyData::Ed25519(_) => {}
-        ssh_key::public::KeyData::Rsa(rsa) => {
-            let modulus = rsa.n.as_positive_bytes().context("RSA 模数必须为正数")?;
-            let first = modulus.first().context("RSA 模数为空")?;
-            let bits = modulus.len() * 8 - first.leading_zeros() as usize;
-            ensure!(
-                (2048..=8192).contains(&bits) && modulus.last().is_some_and(|b| b & 1 == 1),
-                "RSA 模数必须为 2048–8192 位正奇数"
-            );
-            let exponent = rsa.e.as_positive_bytes().context("RSA 指数必须为正数")?;
-            ensure!(exponent.len() <= 4, "RSA 指数过大");
-            let exponent = exponent.iter().fold(0_u32, |n, b| (n << 8) | u32::from(*b));
-            ensure!(
-                exponent >= 3 && exponent % 2 == 1,
-                "RSA 指数必须为至少 3 的奇数"
-            );
-        }
-        _ => anyhow::bail!("仅支持 Ed25519 或 RSA 公钥"),
-    }
-    // Drop comments and options: the stored value is exactly the parsed public key.
-    Ok(format!(
-        "{} {}",
-        key.algorithm().as_str(),
-        key.to_bytes()
-            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))?
-    ))
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct KeyInput {
-    public_key: String,
-}
-pub async fn set_key(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Json(input): Json<KeyInput>,
-) -> ApiResult<Json<Value>> {
-    let name = authorize(&app, &headers, true, false).await?;
-    let key = public_key(&input.public_key).map_err(bad)?;
-    let mut accounts = app.accounts.lock().await;
-    if accounts
-        .grants
-        .publishers
-        .iter()
-        .any(|(user, grant)| user != &name && grant.ssh_key.as_deref() == Some(&key))
-    {
-        return Err(bad("公钥已被其他用户绑定"));
-    }
-    let mut grants = accounts.grants.clone();
-    grants
-        .publishers
-        .get_mut(&name)
-        .ok_or_else(|| bad("用户不存在"))?
-        .ssh_key = Some(key);
-    atomic(
-        &app.ssh_config,
-        &serde_json::to_vec_pretty(&grants).map_err(internal)?,
-        0o644,
-    )
-    .await
-    .map_err(internal)?;
-    accounts.grants = grants;
-    tracing::info!(action = "ssh_key_changed", user = %name);
-    Ok(Json(
-        json!({"status": "saved", "message": "密钥已保存，发布仍需管理员授权"}),
-    ))
-}
 pub async fn users(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     authorize(&app, &headers, false, true).await?;
-    Ok(Json(json!(app.accounts.lock().await.grants.publishers)))
+    let users = store(&app).await.users().await.map_err(database_error)?;
+    let views: BTreeMap<_, _> = users
+        .into_iter()
+        .map(|user| {
+            let mut view = user.view();
+            let grant = user.level.grant();
+            view["enabled"] = json!(grant.enabled);
+            view["role"] = json!(grant.role);
+            view["prefixes"] = json!([]);
+            (user.username, view)
+        })
+        .collect();
+    Ok(Json(json!(views)))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -481,45 +414,20 @@ pub async fn grant(
     let actor = authorize(&app, &headers, true, true).await?;
     ensure_prefixes(&input.prefixes).map_err(bad)?;
     let mut accounts = app.accounts.lock().await;
-    if !accounts
-        .grants
-        .publishers
-        .get(&actor)
-        .is_some_and(|g| g.enabled && g.role == Role::Admin)
-    {
-        return Err(ApiError(StatusCode::FORBIDDEN, "管理员权限已失效".into()));
-    }
-    if !accounts.credentials.contains_key(&name) {
-        return Err(ApiError(StatusCode::NOT_FOUND, "用户不存在".into()));
-    }
-    if actor == name && (input.role != Role::Admin || !input.enabled) {
-        return Err(bad("不能取消自己的管理权限或停用自己"));
-    }
-    let mut grants = accounts.grants.clone();
-    let entry = grants
-        .publishers
-        .get_mut(&name)
-        .ok_or_else(|| bad("用户授权缺失"))?;
-    entry.enabled = input.enabled;
-    entry.role = input.role;
-    entry.prefixes = if input.role == Role::Reader {
-        vec![]
-    } else {
-        input.prefixes
-    };
-    atomic(
-        &app.ssh_config,
-        &serde_json::to_vec_pretty(&grants).map_err(internal)?,
-        0o644,
-    )
-    .await
-    .map_err(internal)?;
-    accounts.grants = grants;
     accounts
-        .sessions
-        .retain(|_, s| s.username != name || s.username == actor);
-    tracing::info!(action = "permission_changed", user = %name, administrator = %actor);
-    Ok(Json(json!({"status": "saved"})))
+        .store
+        .grant(
+            &actor,
+            &name,
+            crate::accounts_db::Level::from_grant(input.enabled, input.role),
+        )
+        .await
+        .map_err(database_error)?;
+    accounts.sessions.retain(|_, session| {
+        session.user.username != name || session.user.username == actor.username
+    });
+    tracing::info!(action = "permission_changed", user = %name, administrator = %actor.username);
+    Ok(Json(json!({"status":"saved"})))
 }
 fn ensure_prefixes(prefixes: &[String]) -> Result<()> {
     ensure!(
@@ -528,11 +436,10 @@ fn ensure_prefixes(prefixes: &[String]) -> Result<()> {
                 && p.ends_with('-')
                 && p.bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')),
-        "前缀必须为 2–64 位小写英文、数字、短横线且以短横线结尾，最多 8 个"
+        "前缀格式无效"
     );
     Ok(())
 }
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PasswordInput {
@@ -544,70 +451,64 @@ pub async fn change_password(
     headers: HeaderMap,
     Json(input): Json<PasswordInput>,
 ) -> ApiResult<Json<Value>> {
-    let name = authorize(&app, &headers, true, false).await?;
+    let user = authorize(&app, &headers, true, false).await?;
     password(&input.old_password).map_err(bad)?;
     password(&input.new_password).map_err(bad)?;
+    let verified = authenticate(&app, &user.username, input.old_password).await?;
+    if !verified.same_revision(&user) {
+        return Err(ApiError(StatusCode::CONFLICT, "凭据已变更".into()));
+    }
     let _permit = app
         .hash_slots
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError(StatusCode::TOO_MANY_REQUESTS, "认证服务繁忙".into()))?;
-    let previous = app
-        .accounts
-        .lock()
-        .await
-        .credentials
-        .get(&name)
-        .ok_or_else(|| bad("用户不存在"))?
-        .hash
-        .clone();
-    let hash = previous.clone();
-    let verified = tokio::task::spawn_blocking(move || {
-        PasswordHash::new(&hash).ok().is_some_and(|h| {
-            Argon2::default()
-                .verify_password(input.old_password.as_bytes(), &h)
-                .is_ok()
-        })
-    })
-    .await
-    .map_err(internal)?;
-    if !verified {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "旧口令错误".into()));
-    }
     let hash = hash_password(input.new_password).await.map_err(internal)?;
     let mut accounts = app.accounts.lock().await;
-    if !accounts
-        .grants
-        .publishers
-        .get(&name)
-        .is_some_and(|g| g.enabled)
-    {
-        return Err(ApiError(StatusCode::FORBIDDEN, "用户已停用".into()));
-    }
-    let credential = accounts
-        .credentials
-        .get_mut(&name)
-        .ok_or_else(|| bad("用户不存在"))?;
-    if credential.hash != previous {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "口令已变更，请重新登录".into(),
-        ));
-    }
-    credential.hash = hash;
-    if let Err(error) = atomic(
-        &app.data.join("users.json"),
-        &serde_json::to_vec(&accounts.credentials).map_err(internal)?,
-        0o600,
-    )
-    .await
-    {
-        accounts.credentials.get_mut(&name).unwrap().hash = previous;
-        return Err(internal(error));
-    }
-    accounts.sessions.retain(|_, s| s.username != name);
-    tracing::info!(action = "password_changed", user = %name);
+    accounts
+        .store
+        .change_password(&user, &hash)
+        .await
+        .map_err(database_error)?;
+    accounts
+        .sessions
+        .retain(|_, session| session.user.id != user.id);
+    tracing::info!(action = "password_changed", user = %user.username);
     Ok(Json(
-        json!({"status": "saved", "message": "请使用新口令重新登录"}),
+        json!({"status":"saved","message":"请使用新口令重新登录"}),
     ))
+}
+pub async fn git_credentials(app: &App, name: &str, secret: String) -> ApiResult<String> {
+    username(name).map_err(|_| ApiError(StatusCode::UNAUTHORIZED, "认证失败".into()))?;
+    password(&secret).map_err(|_| ApiError(StatusCode::UNAUTHORIZED, "认证失败".into()))?;
+    {
+        let mut accounts = app.accounts.lock().await;
+        let now = Instant::now();
+        accounts
+            .git_failures
+            .retain(|t| now.duration_since(*t) < Duration::from_secs(60));
+        if accounts.git_failures.len() >= 20 {
+            return Err(ApiError(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Git 认证失败过于频繁".into(),
+            ));
+        }
+    }
+    let user = match authenticate(app, name, secret).await {
+        Ok(user) => user,
+        Err(error) => {
+            if error.0 == StatusCode::UNAUTHORIZED {
+                app.accounts
+                    .lock()
+                    .await
+                    .git_failures
+                    .push_back(Instant::now());
+            }
+            return Err(error);
+        }
+    };
+    if user.level == crate::accounts_db::Level::Member {
+        return Err(ApiError(StatusCode::FORBIDDEN, "未授权访问文章仓库".into()));
+    }
+    Ok(user.hash)
 }

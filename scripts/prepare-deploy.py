@@ -30,7 +30,7 @@ if args.project_name:
     command.extend(['-p', args.project_name])
 command.extend([
     '-f', str(root / 'deploy/compose.yaml'),
-    'build', 'init', 'api', 'ssh', 'db', 'db-init', 'web',
+    'build', 'init', 'api', 'db', 'db-init', 'web',
 ])
 # Build-only parsing needs values even before deploy.sh creates runtime credentials.
 build_env = os.environ.copy()

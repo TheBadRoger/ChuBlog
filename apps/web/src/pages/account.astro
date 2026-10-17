@@ -1,22 +1,18 @@
 ---
 import Base from '../layouts/Base.astro';
-const sshPort = Number(process.env.SSH_PORT || 2222);
-const hostname = Astro.url.hostname;
-const sshConfig = `Host chublog\n    HostName ${hostname}\n    Port ${sshPort}\n    User git\n    IdentityFile ~/.ssh/id_ed25519\n    IdentitiesOnly yes`;
+const host = Astro.request.headers.get('x-forwarded-host') || Astro.request.headers.get('host') || Astro.url.host;
+const scheme = Astro.request.headers.get('x-forwarded-proto') === 'https' ? 'https:' : Astro.url.protocol;
+const remote = `${scheme}//${host}/git/content.git`;
 ---
 <Base title="账户">
   <div class="account-shell">
     <header class="page-heading"><h1>账户</h1><p id="account-status" role="status">正在读取账户…</p></header>
     <div id="account-content" hidden>
       <div class="account-identity"><div><strong id="account-name"></strong><span class="role-label" id="account-role"></span></div><button id="logout" class="button button-quiet" type="button">退出登录</button></div>
-      <section class="settings-section" aria-labelledby="key-heading">
-        <h2 id="key-heading">SSH 公钥</h2><p id="publish-status" class="section-description"></p>
-        <form id="key-form"><label for="public-key">公钥内容</label><textarea id="public-key" name="public_key" rows="4" maxlength="4096" required spellcheck="false" autocomplete="off" placeholder="ssh-ed25519 AAAA… 或 ssh-rsa AAAA…" aria-describedby="key-help"></textarea><p class="field-help" id="key-help">只粘贴 .pub 文件中的公钥，请勿上传私钥。保存后替换原公钥。</p><p class="form-status" role="status" aria-live="polite"></p><button class="button" type="submit">保存公钥</button></form>
-      </section>
       <section class="settings-section" aria-labelledby="publishing-heading">
-        <h2 id="publishing-heading">从本地发布文章</h2><p class="section-description">获得站长授权后，配置 SSH 并克隆自己的文章仓库。</p>
-        <ol class="publishing-steps"><li><p>在本机生成密钥，并将公钥保存在上方。</p><pre><code>ssh-keygen -t ed25519</code></pre></li><li><p>在本机 ~/.ssh/config 中加入连接配置。首次连接时核对服务器指纹。</p><pre><code>{sshConfig}</code></pre></li><li><p>克隆仓库，创建索引和正文，再提交推送。</p><pre><code>git clone chublog:content.git my-articles
-cd my-articles
+        <h2 id="publishing-heading">从本地发布文章</h2><p class="section-description">获得站长授权后，通过 HTTPS 克隆自己的文章仓库。Git 会提示输入网站用户名和密码；也可以通过系统凭据管理器保存。</p>
+        <p id="publish-status" class="section-description"></p>
+        <ol class="publishing-steps"><li><p>克隆个人仓库。同一个链接会按认证账号映射到各自独立的仓库。</p><pre><code>{`git clone ${remote} my-articles`}</code></pre></li><li><p>创建索引和正文，再提交推送。不要把密码写入仓库 URL。</p><pre><code>cd my-articles
 # 创建 index.toml 和 posts/first/main.md
 git add index.toml posts/first
 git commit -m 'Publish article'
