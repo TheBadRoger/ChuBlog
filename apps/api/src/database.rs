@@ -137,6 +137,22 @@ pub async fn execute_script(db: &Client, script: &str) -> Result<()> {
     }
     Ok(())
 }
+// ChuSQL reserves named type creation for its database administrator.
+pub async fn ensure_types(db: &Client, script: &str) -> Result<()> {
+    for sql in statements(script)? {
+        let mut words = sql.split_whitespace();
+        if words
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("CREATE"))
+            && words
+                .next()
+                .is_some_and(|word| word.eq_ignore_ascii_case("TYPE"))
+        {
+            ensure_schema(db, &sql).await?;
+        }
+    }
+    Ok(())
+}
 pub async fn ensure_schema(db: &Client, script: &str) -> Result<()> {
     for sql in statements(script)? {
         let words: Vec<_> = sql.split_whitespace().take(3).collect();

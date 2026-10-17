@@ -2,86 +2,80 @@
 
 [返回项目首页](../README.md)
 
-## 一键部署
+首次部署的完整步骤见 [README 快速开始](../README.md#快速开始)。服务器需要 Docker Engine、Compose 插件、Python 3 和 Git；Rust、Haskell 和前端生产构建均在 Docker 内完成。
 
-在项目根目录执行：
+## 配置与镜像源
 
-```sh
-scripts/deploy.sh
-```
+部署脚本生成权限为 `600` 的 `.env`，保存两份独立的随机数据库口令。重复部署保留已有配置与数据。构建仅包含生产目标，测试由开发流程单独执行。数据库初始化先由 root 创建 ENUM，再由 chublog_index 建表；日常服务使用博客数据库账号。
 
-脚本依次生成配置、获取固定版本的外部依赖、在 Docker 内构建镜像、启动并初始化数据库，最后启动博客并等待服务就绪。不需要另行执行 `hash-password`、`db-init` 或 `docker compose up`。
+| 配置 | 默认值与用途 |
+| --- | --- |
+| `WEB_PORT` | `1741`，同时控制容器监听、宿主机回环映射和健康检查 |
+| `ALLOW_REGISTRATION` | `true`，普通账户注册开关 |
+| `CHUSQL_ROOT_PASSWORD` | 自动生成的数据库 root 口令 |
+| `CHUSQL_PASSWORD` | 自动生成的博客数据库账号口令 |
+| `REGISTRY_PREFIX` | `mirror.ccs.tencentyun.com/library/`，腾讯云内网镜像前缀 |
+| `DEBIAN_MIRROR` | `mirrors.tencentyun.com` |
+| `NPM_REGISTRY` | `https://mirrors.tencentyun.com/npm/` |
+| `CARGO_MIRROR_INDEX` | `sparse+https://rsproxy.cn/index/`，空值选择 crates.io |
 
-数据库结构以 [`accounts.sql`](../apps/api/sql/accounts.sql) 和 [`articles.sql`](../apps/api/sql/articles.sql) 为准，账户权限使用自定义 ENUM，文本按用途声明长度，时间使用 TIMESTAMP，详见[数据库结构](database.md)。此版本不支持旧整数权限数据库或 JSON 账户导入；旧版测试环境请改用新数据库卷，脚本不会自动转换或删除已有数据。初始化和备份说明见[运维文档](operations.md)。
+公网环境可使用 `--sources-env-file deploy/sources.public.env`。该文件覆盖下载来源，口令继续由 `.env` 管理；shell 导出的同名变量具有更高优先级。Haskell 包使用 Stack 默认来源，GHC 来自固定版本工具链镜像。
 
-首次运行自动创建权限为 `600` 的 `.env`，生成两份不同的随机数据库口令。重复部署保留已有口令和数据；需要备份 `.env` 及持久卷。博客默认监听 `127.0.0.1:1741`，无需配置域名、站点地址或 HTTPS 端口。`.env` 中的 `WEB_PORT=1741` 同时控制程序监听、容器端口、宿主机映射和健康检查。不再配置或开放文章 SSH 端口。
+部署、更新和卸载均接受 `--env-file PATH`、`--project-name NAME`、`--sources-env-file PATH`。同一项目沿用相同参数。
 
-### 首次安装网站
+## 首次安装网站
 
-容器启动不会自动生成站长密码，也不从环境变量读取站长凭据。首次访问网站会进入 `/setup`，填写网站名称、简介、站长账号和密码。名称用于导航、页脚和页面标题，简介用于默认页面描述。
-
-安装还需要从服务器获取一次安装密钥，在项目根目录执行：
+访问 `/setup`，填写网站名称、简介、站长账号和密码。安装密钥通过服务器获取：
 
 ```sh
 docker compose --env-file .env -f deploy/compose.yaml \
   exec api cat /data/setup-token
 ```
 
-自定义配置文件或项目名时，沿用相同参数。安装密钥由 API 使用安全随机数生成，以权限 `600` 保存在私有 `content` 卷，不通过公共 API 返回，也不写日志。网站公开访问时，密钥用于防止其他人抢先创建站长。完成安装后，即使持有密钥也无法再次安装。
+密钥以权限 `600` 保存在私有卷中。安装事务将唯一 `MASTER` 账户和网站配置写入 ChuSQL，成功后入口关闭。普通注册创建 `MEMBER`，站长可在账户页授予作者权限。
 
-提交成功后，在登录页使用刚创建的账户登录。网站元数据、站长 ID 与安装完成时间保存在 ChuSQL 的 `blog_site` 单例记录中，站长账户以 `MASTER` 权限保存在 `blog_users`；两者在同一事务内提交。站长唯一，不能通过授权接口给他人分配 `MASTER`，也不能封禁或降级自己。普通注册只创建 `MEMBER`，安装前不开放注册。
+安装后，发文教程和开发进度自动写入站长仓库并随后台同步公开。站长通过 Git 维护这两篇文章；首次释放记录用于重试和保留后续修改。账户、安装记录与 SQL 类型见[数据库文档](database.md)。
 
-安装后首页为导航页。安装程序以数据库站长用户名创建个人 Git 仓库，首次写入发文教程和开发进度两篇公开 Markdown 文章，随后由正常同步流程导入发布。站长克隆仓库即可修改这些文章；以后重启不会覆盖或补回已撤回内容。仓库写入失败会由后台重试，安装事务和站长账户不会回滚或重新开放。重复部署保留安装状态，不会重新开放入口。数据库故障时安装页显示不可用，不当作尚未安装。此版本没有旧站点安装状态迁移，应从空账户表完成首次安装。
+## 对接服务器反向代理
+
+`web` 提供网站、`/api/*` 和 `/git/*`；`api` 与 `db` 使用内部网络。服务器自己的反向代理将整个站点转发到 `127.0.0.1:1741`，并负责 DNS、HTTPS 证书和公网入口。
+
+代理保留原始 Host，并覆盖 `X-Forwarded-Host`、`X-Forwarded-Proto` 为实际公网主机和协议。API 按这些值校验 Origin。回环端口供可信本机进程使用；容器中的代理需要配置到宿主机的可达地址。
+
+Git 请求体额度为 9 MiB，代理应为 `/git/*` 保留相应容量。博客域名和证书由服务器代理配置管理。
 
 ## 更新与卸载
 
-更新前先提交或自行保存工作区修改，然后执行：
+保存或提交工作区修改后，执行更新：
 
 ```sh
 scripts/update.sh
 ```
 
-脚本拒绝覆盖有未提交修改的工作区，以 `git pull --ff-only` 更新当前分支，再重新获取依赖、构建、初始化数据库并启动服务。保留 `.env`、账户、文章和数据库持久卷。构建失败会退出，不先停止已有服务；启动失败时检查日志，脚本不提供自动版本回滚。
-
-卸载当前项目的容器、网络和本地构建镜像，保留数据卷：
+脚本以 `git pull --ff-only` 更新源码并重新部署，保留配置与持久卷。有本地修改时，脚本退出并提示处理。默认卸载也保留数据：
 
 ```sh
 scripts/uninstall.sh
 ```
 
-**永久删除文章、账户、数据库等项目持久数据**时，使用：
+`--purge` 会永久删除本项目的数据卷，使用前完成[备份](operations.md#备份与恢复)：
 
 ```sh
 scripts/uninstall.sh --purge
 ```
 
-卸载保留项目源码、`.env`、共享基础镜像和 Docker 构建缓存，不执行全局 prune。保留数据卷时，重新运行部署脚本即可恢复。删除数据卷后恢复只能依靠备份。
+卸载处理本项目容器、网络和本地构建镜像，源码、`.env`、共享基础镜像及构建缓存继续保留。
 
-三个脚本均支持 `--env-file PATH`、`--project-name NAME` 和 `--sources-env-file PATH`；同一套部署的更新与卸载必须沿用相同配置路径和项目名。下载源覆盖文件只接受镜像及软件包来源，不能覆盖数据库口令。
+## 可选安装数据库 CLI
 
-## 宿主机要求
-
-宿主机只需 Docker Engine（含 BuildKit）、Docker Compose 插件、Python 3 和 Git，以及执行 Docker 命令的权限。不需要安装 Cargo、Rust、GHC、Stack、Node.js 或 C 编译工具。
-
-Rust API、ChuSQL 存储库和 Haskell 服务端在 Docker 多阶段构建中编译，Astro 前端也在 Docker 中构建。构建工具和源码只保留在构建阶段，运行镜像仅包含应用产物及运行依赖。首次构建会拉取预装工具链的镜像并下载软件包，需要网络、足够的内存及磁盘空间；后续构建复用 Docker 缓存。
-
-## 服务与路由
-
-Compose 编排 Astro 前端 `web`、Rust API `api`、ChuSQL 数据库 `db` 。`init` 初始化持久卷，`db-init` 用于首次数据库授权。
-
-`web` 是博客前端，不是 ChuSQL Web。数据库默认只构建 `chusql-server`、`csql-bootstrap` 与存储库；可选安装命令行客户端，不构建或启动 `chusql-web`、`csql-web` 或数据库管理网站。
-
-### 可选安装数据库 CLI
-
-需要直接执行 SQL 时，在部署命令中添加 `--with-cli`。客户端也在 Docker 内编译，宿主机无需安装 Haskell 工具链：
+部署和后续更新携带 `--with-cli` 即可安装 `csql`：
 
 ```sh
 scripts/deploy.sh --with-cli
+scripts/update.sh --with-cli
 ```
 
-更新时使用 `scripts/update.sh --with-cli`；单独构建镜像时使用 `python3 scripts/prepare-deploy.py --with-cli`。此选项不保存到配置文件，后续重新部署或更新时需继续携带，不带选项会构建不含 CLI 的镜像。数据库持久卷保留。
-
-部署完成后，在项目根目录进入数据库命令行：
+该选项按本次命令生效。进入数据库 CLI：
 
 ```sh
 docker compose --env-file .env -f deploy/compose.yaml \
@@ -89,87 +83,15 @@ docker compose --env-file .env -f deploy/compose.yaml \
   --user root --database chublog --history /tmp/chusql_history
 ```
 
-按提示输入 `.env` 中的 `CHUSQL_ROOT_PASSWORD`，这是数据库 root 密码，与博客账户密码不同。客户端通过容器回环地址连接，不开放额外端口。历史记录写入临时目录，容器重建后不保留。自定义部署使用相同的 `--env-file` 和 `-p` 项目名。
+按提示输入 `.env` 中的 `CHUSQL_ROOT_PASSWORD`。客户端连接容器回环地址，历史保存在临时目录。单独构建镜像可运行 `python3 scripts/prepare-deploy.py --with-cli`。
 
-连接后可执行 `SELECT id, username, created_at, last_login_at, permission_level FROM blog_users;` 检查账户数据。权限列使用自定义 ENUM，值为 `BANNED`、`MEMBER`、`AUTHOR` 或 `MASTER`。
+## 检查服务
 
-前端通过同源 `/api/*` 和 `/git/*` 路由转发请求到内部 `api:3001`。普通 API 请求体上限 8 KiB，Git 请求体上限 9 MiB，Git pack 上限 8 MiB。服务器现有的反向代理只需将整个站点转发到 `127.0.0.1:1741`，无需分别配置页面、API 和 Git。若服务器代理另有请求体限制，应允许 Git 的 9 MiB 请求，不要将普通账户 API 的 8 KiB 限制套用到整个站点。项目不启动 Caddy，不监听 80/443，也不管理域名或证书。
-
-API 和数据库不映射宿主端口；前端只映射本机回环地址，Git 与网页共用这一 HTTP 入口。前端同时连接内部网络与独立的 `web-entry` 普通桥接网络，确保 Docker 实际发布 1741 端口；不能只连接 `internal` 网络。前端容器使用非 root 用户、只读根文件系统和独立资源上限。
-
-## 腾讯云镜像
-
-`.env.example` 默认配置 `REGISTRY_PREFIX=mirror.ccs.tencentyun.com/library/`，为 Rust、Debian 与 Node 使用腾讯云内网 Docker 镜像。该地址仅供腾讯云内网访问，见[腾讯云官方说明](https://cloud.tencent.com/document/practice/1207/45596)。
-
-在腾讯云内网部署时保留该值；其他环境将 `REGISTRY_PREFIX` 留空以使用原始镜像名，或改为可访问且受信的镜像前缀。项目不修改宿主机 Docker 配置、不关闭 TLS，也不重启 Docker 守护进程。
-
-镜像注册表与软件包源分别配置：
-
-| 配置 | 默认值与用途 |
-| --- | --- |
-| `REGISTRY_PREFIX` | `mirror.ccs.tencentyun.com/library/`，用于 Rust、GHC/Haskell、Debian 与 Node 镜像 |
-| `DEBIAN_MIRROR` | `mirrors.tencentyun.com`，容器内 Debian 软件包源，保留 Debian 签名校验 |
-| `NPM_REGISTRY` | `https://mirrors.tencentyun.com/npm/`，前端依赖源 |
-| `CARGO_MIRROR_INDEX` | 默认 `sparse+https://rsproxy.cn/index/`；显式留空可使用 crates.io |
-
-腾讯云的[公开软件源目录](https://mirrors.tencent.com/)没有列出 Cargo 与 Hackage 镜像，因此不拼接未经确认的腾讯云地址。Cargo 使用 [RsProxy](https://rsproxy.cn/) 等可配置外部源；Haskell 包沿用 Stack 默认配置。腾讯云的[软件源说明](https://cloud.tencent.com/document/product/213/8623)区分了公网和内网域名。
-
-Rust 工具链直接来自 Rust 镜像；GHC 9.10.3 和 Stack 来自匹配 ChuSQL resolver 的 Haskell 镜像。构建时禁止 Stack 再下载 GHC，也不调用 rustup 安装或更新编译器。编译仍在 Debian 13 中进行。
-
-### 使用外网源验证
-
-项目提供不含密码的 `deploy/sources.public.env`，使用公开 ECR Docker Library 镜像、USTC Debian 源、官方 npm 源及 RsProxy Cargo 源。外网部署与隔离联调时运行：
-
-```sh
-scripts/deploy.sh \
-  --sources-env-file deploy/sources.public.env
-python3 scripts/smoke.py \
-  --sources-env-file deploy/sources.public.env
-```
-
-第二份配置只覆盖下载来源，不改写 `.env` 的口令等生产设置。Docker Compose 会优先使用当前 shell 中已导出的同名环境变量；切换测试配置前须检查这些覆盖。公网源连通性不能证明腾讯云内网镜像可用，内网源仍需在腾讯云服务器验证。
-
-## 构建选项与平台
-
-服务器部署固定只构建生产目标，无需额外参数：Rust 只构建 `chublog-api` 可执行文件与 ChuSQL 存储库，Haskell 只构建服务端和 bootstrap，并显式禁用测试与基准目标。前端只执行类型检查与生产构建，不调用测试命令。`deploy.sh` 与 `prepare-deploy.py` 不会自动运行联调脚本；开发测试仍可独立执行。
-
-需要切换默认腾讯云内网 Debian 包源时，可在 `.env` 配置 `DEBIAN_MIRROR=mirrors.ustc.edu.cn`，仍使用 Debian 签名校验。
-
-- `prepare-deploy.py` 调用 Compose 构建全部应用镜像，不执行宿主机编译、不生成 `deploy/bin/`。
-- `--build-database` 保留为兼容参数；数据库始终在 Docker 中构建。旧的 `--no-build` 和 `--chusql-source` 不再支持。
-- `--sources-env-file PATH` 可追加只含下载源配置的 Compose 环境文件；优先级高于第一份环境文件。
-- `--env-file PATH` 可选择配置文件；默认读取项目 `.env`，不存在时读取 `.env.example`（仅用于构建，不用于生产启动）。
-- 外部依赖仍由宿主机 `fetch-deps.py` 初始化，沿用现有 Git 配置；构建过程不将 SSH 私钥或 Git 凭据复制到镜像。
-- GHC 工具链镜像支持 amd64、arm64；更新 ChuSQL resolver 时，须同步核对 GHC 镜像版本与 Dockerfile 中的复制路径。
-- 镜像默认按 Docker 主机架构构建，不复用宿主机已有二进制；构建与运行阶段均使用 Debian 13 系列镜像。
-- Cargo、Stack 软件包缓存保存在 Docker BuildKit 中。镜像前缀控制编译器镜像来源，Cargo 与 Haskell 包下载独立于镜像注册表。
-- 运行镜像不含编译器、源码、`.env` 或密码文件。
-
-## 验证部署
-
-在服务器本机打开 `http://127.0.0.1:1741`，或访问服务器反向代理配置的域名，首次确认进入安装页面，安装后确认首页显示网站导航，且能进入文章列表、账户及站长的两篇内置文章。检查服务状态与日志：
+安装后可检查首页导航、两篇内置文章和账户登录，并查看服务状态：
 
 ```sh
 docker compose --env-file .env -f deploy/compose.yaml ps
 docker compose --env-file .env -f deploy/compose.yaml logs --tail 100 api db
 ```
 
-`api`、`web` 和 `db` 应运行，`init` 成功退出。`db-init` 是一次性初始化任务。部署脚本对数据库初始化设有重试和超时，失败时退出，不会报告部署完成。
-
-用于开发环境的隔离部署回归检查：
-
-```sh
-python3 scripts/smoke-deployment.py --sources-env-file deploy/sources.public.env
-```
-
-该检查使用独立项目与本机 1741 端口，验证无管理员启动、普通用户注册登录、保留数据卸载后重新部署及彻底卸载。测试结束删除自己的容器和卷，不操作正式项目。
-
-## 对接服务器反向代理
-
-在服务器自己的 Caddy 配置中，将博客域名的上游设为 `127.0.0.1:1741`。服务器负责 DNS、HTTPS 证书及公网 80/443 入口，博客配置中不保存域名。若 Caddy 本身运行在独立容器内，需要另外安排容器到宿主机回环服务的可达性；容器自身的 `127.0.0.1` 不指向宿主机。
-
-代理必须保留原始 `Host`，并覆盖客户端传入的 `X-Forwarded-Host` 与 `X-Forwarded-Proto`，分别写入实际公网主机名（含非默认端口）和协议。Caddy 直接作为公网入口时会设置这些转发头。API 严格比较请求 `Origin` 与代理提供的来源；公网身份操作要求 HTTPS，回环地址允许 HTTP。HTTPS 登录和退出响应使用 Secure Cookie，CSRF 校验继续有效。
-
-只允许服务器上可信代理及本机进程访问博客回环端口，不要将其改为公网监听或直接暴露内部 API。多级代理应由服务器自行配置可信上游，不直接信任公网客户端提供的转发头。
-
-部署脚本仅管理本项目的 Compose 服务。服务器独立运行的 Caddy 及其证书由你维护，数据库凭据由 `.env` 保存。
+`api`、`web`、`db` 应运行，`init` 成功退出；`db-init` 为一次性数据库初始化任务。故障处理见[运维文档](operations.md)，部署环境联调见[开发文档](development.md#部署环境联调)。

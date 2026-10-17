@@ -94,15 +94,21 @@ pub(crate) async fn rebuild_with_db(snapshot: &Snapshot, db: Client) -> Result<(
 }
 
 pub async fn provision() -> Result<()> {
-    let db = Client::connect(
-        std::env::var("CHUSQL_ADDRESS").unwrap_or_else(|_| "127.0.0.1:7777".into()),
-        "root",
+    provision_at(
+        &std::env::var("CHUSQL_ADDRESS").unwrap_or_else(|_| "127.0.0.1:7777".into()),
         &std::env::var("CHUSQL_ROOT_PASSWORD")?,
+        &std::env::var("CHUSQL_PASSWORD")?,
     )
-    .await?;
+    .await
+}
+
+pub(crate) async fn provision_at(address: &str, root_password: &str, password: &str) -> Result<()> {
+    ensure!(password.len() >= 16, "数据库口令至少 16 字节");
+    let db = Client::connect(address, "root", root_password).await?;
     if db.query("USE chublog").await.is_err() {
         crate::database::execute_script(&db, crate::database::CREATE_DATABASE_SQL).await?;
     }
+    db.query("USE chublog").await?;
     let roles = db.query("SHOW ROLES").await?;
     ensure!(!roles.truncated, "身份列表被截断，请人工检查数据库初始化");
     if !roles
@@ -111,19 +117,25 @@ pub async fn provision() -> Result<()> {
         .flatten()
         .any(|v| v.as_str() == Some("chublog_index"))
     {
-        let password = std::env::var("CHUSQL_PASSWORD")?;
-        ensure!(password.len() >= 16, "数据库口令至少 16 字节");
-        let q = Query::new("CREATE USER chublog_index IDENTIFIED BY ").bind(password.as_str());
+        let q = Query::new("CREATE USER chublog_index IDENTIFIED BY ").bind(password);
         db.query(q.as_str())
             .await
             .map_err(|_| anyhow::anyhow!("创建索引用户失败"))?;
+    }
+    for script in [crate::database::ACCOUNTS_SQL, crate::database::ARTICLES_SQL] {
+        crate::database::ensure_types(&db, script)
+            .await
+            .context("使用数据库管理员初始化 ENUM 类型失败")?;
     }
     db.query("REVOKE CONNECT ON DATABASE chublog FROM PUBLIC")
         .await?;
     db.query("GRANT CONNECT, CREATE ON DATABASE chublog TO chublog_index")
         .await?;
     db.close().await;
-    let db = connect().await?;
+    let db = Client::connect(address, "chublog_index", password)
+        .await
+        .context("连接博客数据库账号失败")?;
+    db.query("USE chublog").await?;
     crate::database::ensure_schema(&db, crate::database::ACCOUNTS_SQL).await?;
     crate::database::ensure_schema(&db, crate::database::ARTICLES_SQL).await?;
     db.close().await;

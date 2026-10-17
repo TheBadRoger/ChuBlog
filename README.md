@@ -1,31 +1,56 @@
 # ChuBlog
 
-Rust/Axum 博客后端。作者在独立 Git 仓库中编辑文本或 Markdown，通过账号密码认证的 HTTPS Git 推送发布；`index.toml` 管理文章清单、元信息和多页入口。HTTP API 提供阅读、账户与发布授权，ChuSQL 保存账户、Argon2id 密码哈希、ENUM 权限及可重建的文章索引。
+使用 Astro + TypeScript、Rust/Axum 和 ChuSQL 的个人博客。文章通过作者独立的 HTTPS Git 仓库发布，`index.toml` 管理文章元信息和多页正文。账户、权限及网站设置保存在 ChuSQL。
 
-提供 Rust/Axum 后端和 Astro + TypeScript 简单前端。首页为网站导航页，发文教程与开发进度以站长文章发布，支持文章阅读、注册登录和账户设置；文章继续通过 Git 发布。
+## 快速开始
 
-在项目根目录一键部署（默认腾讯云内网源）：
+服务器需要 Docker Engine、Docker Compose 插件、Python 3 和 Git，以及执行 Docker 命令的权限。编译在容器内完成，域名和 HTTPS 由服务器已有的反向代理管理。
 
-```sh
-scripts/deploy.sh
-```
+1. 克隆项目：
 
-博客默认监听 `127.0.0.1:1741`，域名和 HTTPS 由服务器现有反向代理管理，无需填写域名环境变量。
+   ```sh
+   git clone https://github.com/TheBadRoger/ChuBlog.git
+   cd ChuBlog
+   ```
 
-宿主机只需 Docker Compose、Python 3 和 Git。脚本自动完成依赖获取、容器内编译、数据库初始化和启动。首次访问 `/setup`，使用服务器生成的安装密钥填写网站信息并创建唯一站长，之后安装入口关闭。更新使用 `scripts/update.sh`，卸载使用 `scripts/uninstall.sh`，详细配置见[部署文档](docs/deployment.md)。
+2. 部署博客：
+
+   ```sh
+   scripts/deploy.sh
+   ```
+
+   默认使用腾讯云内网源。其他网络可使用公网源配置：
+
+   ```sh
+   scripts/deploy.sh --sources-env-file deploy/sources.public.env
+   ```
+
+   脚本自动获取依赖、构建镜像、初始化数据库并启动服务，入口为 `127.0.0.1:1741`。
+
+3. 获取安装密钥：
+
+   ```sh
+   docker compose --env-file .env -f deploy/compose.yaml \
+     exec api cat /data/setup-token
+   ```
+
+4. 通过服务器反向代理打开网站的 `/setup`，填写网站名称、简介、站长账号、密码和安装密钥。服务器本机也可访问 `http://127.0.0.1:1741/setup`。
+
+安装完成后，首页提供导航，站长仓库自动发布“发文章教程”和“开发进度”。登录站长账户即可授权作者，作者从账户页获取个人仓库地址。
+
+更新使用 `scripts/update.sh`，卸载使用 `scripts/uninstall.sh`。可选数据库客户端通过 `scripts/deploy.sh --with-cli` 安装。配置、代理和完整命令见[部署文档](docs/deployment.md)。
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [开发与依赖](docs/development.md) | 获取代码、双 HTTPS 依赖源、开发检查与联调 |
-| [前端](docs/frontend.md) | 页面、本地开发、浏览器联调和项目技能 |
-| [部署](docs/deployment.md) | 容器内构建、Docker Compose、首次初始化 |
-| [文章发布](docs/publishing.md) | 账户授权、个人仓库、文章清单与 Git 工作流 |
-| [数据库结构](docs/database.md) | 预装类型、字段长度、时间转换与安装记录 |
-| [API](docs/API.md) | HTTP 接口、认证、请求与错误响应 |
-| [内容与隔离](docs/security.md) | 文件白名单、容量限制、HTTPS Git 与进程边界 |
-| [运维与备份](docs/operations.md) | 数据库初始化、故障处理与备份恢复 |
+| [部署](docs/deployment.md) | 首次安装、镜像源、代理、更新与卸载 |
+| [文章发布](docs/publishing.md) | 作者授权、索引格式与发布规则 |
+| [API](docs/API.md) | 接口、认证和响应 |
+| [数据库](docs/database.md) | 字段类型、时间格式和安装记录 |
+| [运维](docs/operations.md) | 备份、恢复和故障处理 |
+| [安全限制](docs/security.md) | 内容白名单、容量和隔离边界 |
+| [开发](docs/development.md) | 依赖、源码检查和联调 |
+| [前端](docs/frontend.md) | 页面与本地开发 |
 
 源码：[GitHub](https://github.com/TheBadRoger/ChuBlog.git) · [自建仓库](https://repo.chunana.cn/ChuNa7a/ChuBlog.git)
-

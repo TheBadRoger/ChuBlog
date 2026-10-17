@@ -1,30 +1,25 @@
-# Astro 前端
+# 前端
 
 [返回项目首页](../README.md)
 
-网站导航、页脚和标题使用安装时填写的网站名称，页面默认描述使用网站简介；元数据不可用时回退到 ChuBlog，不阻断已有公共文章阅读。
-
-前端位于 `apps/web`，使用 Astro、TypeScript 和 Node 服务端渲染。首页为导航页，展示网站名称、简介，以及文章、账户、发文教程和开发进度入口。教程与进度使用正常文章阅读页。
+前端位于 `apps/web`，使用 Astro、TypeScript 和 Node 服务端渲染。网站名称和默认描述来自安装配置，页面正文使用统一阅读组件。
 
 ## 页面
 
 | 地址 | 功能 |
 | --- | --- |
-| `/` | 未安装时跳转安装页；安装后为网站导航首页 |
-| `/setup` | 网站名称、简介、站长账号密码和安装密钥；安装完成后跳转登录 |
-| `/posts/站长名~publishing` | 站长名下的发文教程，首页提供入口 |
-| `/posts/站长名~development` | 站长名下的开发进度，首页提供入口 |
-| `/articles` | 文章列表、标题/简介/作者/标签搜索、标签筛选和分页 |
-| `/posts/作者名~文章ID` | 阅读入口文档、图片和文章元信息 |
-| `/posts/作者名~文章ID/页面名.md` | 阅读同文章的其他可达页面，保留相对链接和锚点 |
-| `/login`、`/login?mode=register` | 登录、注册与错误反馈 |
-| `/account` | 密码修改、退出和 Git 发布说明；管理员可授权账户并查看待修复索引 |
-
-未实现的评论、互动、内部文章阅读、审核和热度排序不提供占位操作按钮。文章写入继续通过 Git，不提供在线编辑。
+| `/` | 安装前进入安装页，安装后提供导航 |
+| `/setup` | 网站信息与唯一站长初始化，完成后进入登录页 |
+| `/articles` | 文章列表、搜索、标签筛选和分页 |
+| `/posts/作者名~文章ID` | 文章入口文档 |
+| `/posts/作者名~文章ID/页面名.md` | 同文章的其他页面 |
+| `/posts/站长名~publishing`、`/posts/站长名~development` | 两篇内置文章 |
+| `/login`、`/login?mode=register` | 登录与注册 |
+| `/account` | 密码、发布指引、站长授权和暂存状态 |
 
 ## 本地开发
 
-需要 Node.js 22.22 或更高版本，Docker 前端镜像使用 Node.js 24。先启动 API。无需配置公网域名。
+需要 Node.js 22.22 或更高版本，并启动后端 API：
 
 ```sh
 cd apps/web
@@ -33,42 +28,17 @@ cp .env.example .env
 npm run dev
 ```
 
-打开 `http://127.0.0.1:4321`。`API_BASE_URL` 默认 `http://127.0.0.1:3001`，开发和生产均通过 Astro `/api` 路由转发到该地址，账户页面从当前请求读取 HTTPS Git 地址。
+页面位于 `http://127.0.0.1:4321`。`API_BASE_URL` 默认指向 `http://127.0.0.1:3001`，Astro 同源转发 `/api/*` 和 `/git/*`。
 
 ```sh
 npm run build
 npm test
 ```
 
-构建同时检查 Astro 和 TypeScript。生产运行 `npm start` 提供页面和 API 同源转发，Docker 默认仅映射 `127.0.0.1:1741`，见[部署说明](deployment.md)。
+构建包含 Astro 和 TypeScript 检查。生产入口运行 `npm start`，Docker 端口见[部署文档](deployment.md)。
 
-## 安全与访问
+## 渲染与验证
 
-浏览器使用后端 HttpOnly Cookie，CSRF 只保存在内存，不写入 localStorage。修改请求携带当前会话的 CSRF，Origin 由浏览器发送；后端继续执行全部权限检查。
+浏览器使用 HttpOnly Cookie 和内存 CSRF。Markdown 输出经过清理，纯文本及元数据经过转义，页面设置 CSP。文章内链接按后端返回的页面与资源映射，服务故障显示重试提示。
 
-Markdown 禁用原始 HTML，并在渲染后清理输出。文章内链接只映射到 API 返回的同文章页面和图片；普通外部链接仍受协议限制。纯文本通过转义输出显示。页面设置 CSP、禁用缓存和内容类型嗅探，不加载第三方字体、脚本或跟踪服务。
-
-文章服务故障返回可重试提示，不填充示例数据。注册被关闭、会话失效和限流错误直接显示后端反馈。
-
-## 浏览器检查
-
-以下检查用于开发电脑，需要 Python Playwright 及 Chromium；生产部署无需安装这些工具：
-
-```sh
-python3 -m pip install playwright
-python3 -m playwright install chromium
-python3 scripts/smoke.py --browser-test \
-  --sources-env-file deploy/sources.public.env
-```
-
-该命令使用隔离的 Docker 项目，验证真实注册登录、密码修改、HTTPS Git 指引、站长授权、多页阅读及手机布局，测试后清理自己创建的容器与卷。截图默认放在 `/tmp/chublog-web-screenshots`。系统缺少浏览器库时，按 Playwright 安装说明准备运行环境。
-
-## 项目技能
-
-按维护者要求下载到本项目 `.agents/skills/`，作为开发参考，不是运行时依赖：
-
-- [frontend-design](../.agents/skills/frontend-design/SKILL.md)，来源为 [Anthropic skills](https://github.com/anthropics/skills/tree/main/skills/frontend-design)。
-- [webapp-testing](../.agents/skills/webapp-testing/SKILL.md)，来源为 [Anthropic skills](https://github.com/anthropics/skills/tree/main/skills/webapp-testing)。
-- [web-design-guidelines](../.agents/skills/web-design-guidelines/SKILL.md)，来源为 [Vercel agent skills](https://github.com/vercel-labs/agent-skills/tree/main/skills/web-design-guidelines)。
-
-后续会话可继续发现这些技能。本轮已直接读取，沿用简洁导航页、克制排版、键盘焦点、表单标签和真实浏览器检查。
+真实浏览器联调在指定部署环境运行，命令见[开发文档](development.md#部署环境联调)。项目开发技能位于 `.agents/skills/`：[设计](../.agents/skills/frontend-design/SKILL.md)、[浏览器测试](../.agents/skills/webapp-testing/SKILL.md)、[界面检查](../.agents/skills/web-design-guidelines/SKILL.md)。
