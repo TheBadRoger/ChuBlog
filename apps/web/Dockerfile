@@ -1,13 +1,14 @@
-ARG NODE_IMAGE=node:24-bookworm-slim
+ARG NODE_IMAGE=mirror.ccs.tencentyun.com/library/node:24-bookworm-slim
 FROM ${NODE_IMAGE} AS build
+ARG NPM_REGISTRY=https://mirrors.tencentyun.com/npm/
 WORKDIR /app
 ENV ASTRO_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm ci --no-audit --no-fund --registry="${NPM_REGISTRY}"
 COPY astro.config.mjs tsconfig.json ./
 COPY public ./public
 COPY src ./src
-RUN npm run build && npm prune --omit=dev --no-audit --no-fund
+RUN npm run build && npm prune --omit=dev --no-audit --no-fund --registry="${NPM_REGISTRY}"
 
 FROM ${NODE_IMAGE}
 WORKDIR /app

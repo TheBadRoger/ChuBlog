@@ -47,12 +47,13 @@ Markdown 禁用原始 HTML，并在渲染后清理输出。文章内链接只映
 
 ## 浏览器检查
 
-浏览器联调需要 Python Playwright 及 Chromium：
+以下检查用于开发电脑，需要 Python Playwright 及 Chromium；生产部署无需安装这些工具：
 
 ```sh
 python3 -m pip install playwright
 python3 -m playwright install chromium
-python3 scripts/smoke.py --key-type rsa --browser-test
+python3 scripts/smoke.py --key-type rsa --browser-test \
+  --sources-env-file deploy/sources.public.env
 ```
 
 该命令使用隔离的 Docker 项目，验证真实注册登录、密码修改、公钥保存、站长授权、多页阅读及手机布局，测试后清理自己创建的容器与卷。截图默认放在 `/tmp/chublog-web-screenshots`。系统缺少浏览器库时，按 Playwright 安装说明准备运行环境。
