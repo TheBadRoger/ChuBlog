@@ -549,8 +549,6 @@ async fn app(dir: &std::path::Path) -> Arc<App> {
     Arc::new(App {
         data: dir.into(),
         ssh_config: config,
-        origin: "http://localhost:4321".into(),
-        secure: false,
         registration: true,
         accounts: Mutex::new(accounts),
         hash_slots: Arc::new(Semaphore::new(2)),
@@ -579,7 +577,8 @@ async fn request(
         .method(method)
         .uri(path)
         .header("content-type", "application/json")
-        .header("origin", "http://localhost:4321");
+        .header("origin", "http://localhost:4321")
+        .header("host", "localhost:4321");
     if let Some(cookie) = cookie {
         builder = builder.header("cookie", cookie);
     }
@@ -952,4 +951,70 @@ async fn password_rotation_origin_and_request_limits() {
     )
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn proxy_origin_validation_and_https_session_cookie() {
+    let mut headers = HeaderMap::new();
+    headers.insert("host", HeaderValue::from_static("api:3001"));
+    headers.insert(
+        "x-forwarded-host",
+        HeaderValue::from_static("blog.example:8443"),
+    );
+    headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    headers.insert(
+        "origin",
+        HeaderValue::from_static("https://blog.example:8443"),
+    );
+    assert!(matches!(origin(&headers), Ok(true)));
+    for invalid in [
+        "https://evil.example",
+        "https://blog.example",
+        "null",
+        "https://blog.example:8443/",
+    ] {
+        headers.insert("origin", HeaderValue::from_str(invalid).unwrap());
+        assert!(origin(&headers).is_err(), "accepted {invalid}");
+    }
+    headers.insert(
+        "origin",
+        HeaderValue::from_static("https://blog.example:8443"),
+    );
+    headers.append("x-forwarded-host", HeaderValue::from_static("evil.example"));
+    assert!(origin(&headers).is_err());
+    headers.insert(
+        "x-forwarded-host",
+        HeaderValue::from_static("blog.example:8443"),
+    );
+    headers.insert("x-forwarded-proto", HeaderValue::from_static("https,http"));
+    assert!(origin(&headers).is_err());
+    headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+    headers.insert(
+        "origin",
+        HeaderValue::from_static("http://blog.example:8443"),
+    );
+    assert!(origin(&headers).is_err(), "public login must require HTTPS");
+    headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    headers.insert(
+        "origin",
+        HeaderValue::from_static("https://blog.example:8443"),
+    );
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    let dir = tempfile::tempdir().unwrap();
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .body(Body::from(
+            json!({"username":"admin","password":"Administrator-test-123"}).to_string(),
+        ))
+        .unwrap();
+    *req.headers_mut() = headers;
+    let response = router(app(dir.path()).await).oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .ends_with("; Secure")
+    );
 }

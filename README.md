@@ -7,8 +7,10 @@ Rust/Axum 博客后端。作者在独立 Git 仓库中编辑文本或 Markdown�
 在项目根目录一键部署（默认腾讯云内网源）：
 
 ```sh
-scripts/deploy.sh --site https://blog.example.com
+scripts/deploy.sh
 ```
+
+博客默认监听 `127.0.0.1:1741`，域名和 HTTPS 由服务器现有反向代理管理，无需填写域名环境变量。
 
 宿主机只需 Docker Compose、Python 3 和 Git。脚本自动完成依赖获取、容器内编译、数据库初始化和启动，不创建初始管理员。更新使用 `scripts/update.sh`，卸载使用 `scripts/uninstall.sh`，详细配置见[部署文档](docs/deployment.md)。
 

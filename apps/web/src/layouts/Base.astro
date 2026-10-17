@@ -2,7 +2,7 @@
 import '../styles/global.css';
 interface Props { title?: string; description?: string; home?: boolean }
 const { title, description = '文章与随笔。', home = false } = Astro.props;
-const site = process.env.SITE_TITLE || 'ChuBlog';
+const site = 'ChuBlog';
 const path = Astro.url.pathname;
 ---
 <!doctype html>

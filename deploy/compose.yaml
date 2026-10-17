@@ -30,7 +30,6 @@ services:
     depends_on:
       init: { condition: service_completed_successfully }
     environment:
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN}
       CHUSQL_ADDRESS: db:7777
       CHUSQL_USER: chublog_index
       CHUSQL_PASSWORD: ${CHUSQL_PASSWORD:?Set CHUSQL_PASSWORD}
@@ -56,6 +55,7 @@ services:
       retries: 3
     logging: *logging
   web:
+    ports: ["127.0.0.1:${WEB_PORT:-1741}:4321"]
     build:
       context: ../apps/web
       args:
@@ -65,8 +65,6 @@ services:
       api: { condition: service_healthy }
     environment:
       API_BASE_URL: http://api:3001
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN}
-      SITE_TITLE: ${SITE_TITLE:-ChuBlog}
       SSH_PORT: ${SSH_PORT:-2222}
     read_only: true
     tmpfs: ["/tmp:size=16m,noexec,nosuid"]
@@ -140,28 +138,10 @@ services:
     read_only: true
     restart: "no"
     logging: *logging
-  caddy:
-    image: ${REGISTRY_PREFIX-mirror.ccs.tencentyun.com/library/}caddy:2
-    environment:
-      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
-    ports: ["${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80", "${HTTP_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"]
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
-    security_opt: [no-new-privileges:true]
-    networks: [backend, edge]
-    depends_on:
-      api: { condition: service_healthy }
-      web: { condition: service_healthy }
-    restart: unless-stopped
-    logging: *logging
+
 networks:
   backend: { internal: true }
   ssh: {}
-  edge: {}
 volumes:
   content: {}
   ingress: {}
@@ -169,5 +149,3 @@ volumes:
   ssh-host-keys: {}
   database: {}
   db-logs: {}
-  caddy-data: {}
-  caddy-config: {}

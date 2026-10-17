@@ -16,10 +16,10 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--sources-env-file', type=Path, default=ROOT / 'deploy/sources.public.env')
 args = parser.parse_args()
 project = 'chublog-lifecycle-' + secrets.token_hex(4)
-origin = 'http://localhost:18080'
+origin = 'http://localhost:1741'
 env = {key: value for key, value in os.environ.items()
        if key not in ['COMPOSE_PROFILES', 'COMPOSE_PROJECT_NAME', 'PUBLIC_ORIGIN', 'SITE_ADDRESS',
-                      'CHUSQL_ROOT_PASSWORD', 'CHUSQL_PASSWORD', 'HTTP_PORT', 'HTTPS_PORT',
+                      'CHUSQL_ROOT_PASSWORD', 'CHUSQL_PASSWORD', 'WEB_PORT', 'HTTP_PORT', 'HTTPS_PORT',
                       'REGISTRY_PREFIX', 'DEBIAN_MIRROR', 'NPM_REGISTRY', 'CARGO_MIRROR_INDEX']}
 
 
@@ -34,13 +34,13 @@ def read_page(path):
 
 with tempfile.TemporaryDirectory(prefix='chublog-lifecycle-') as temporary:
     config = Path(temporary) / '.env'
-    config.write_text('HTTP_BIND=127.0.0.1\nHTTPS_PORT=18443\nSSH_BIND=127.0.0.1\nSSH_PORT=12222\n')
+    config.write_text('SSH_BIND=127.0.0.1\nSSH_PORT=12222\n')
     options = ['--env-file', str(config), '--project-name', project,
                '--sources-env-file', str(args.sources_env_file.resolve())]
     compose = ['docker', 'compose', '--env-file', str(config), '--env-file',
                str(args.sources_env_file.resolve()), '-p', project, '-f', str(ROOT / 'deploy/compose.yaml')]
     try:
-        run([str(ROOT / 'scripts/deploy.sh'), *options, '--site', origin], stdin=subprocess.DEVNULL)
+        run([str(ROOT / 'scripts/deploy.sh'), *options], stdin=subprocess.DEVNULL)
         initial = config.read_text()
         assert 'ADMIN_PASSWORD_HASH' not in initial
         assert config.stat().st_mode & 0o777 == 0o600
@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory(prefix='chublog-lifecycle-') as temporary:
         else:
             raise AssertionError('First user acquired administrator permissions')
         running = run(compose + ['ps', '--services', '--status', 'running'], capture_output=True).stdout.split()
-        assert set(running) == {'db', 'api', 'ssh', 'web', 'caddy'}, running
+        assert set(running) == {'db', 'api', 'ssh', 'web'}, running
         run(compose + ['run', '--rm', '--no-deps', '-T', 'db-init'], capture_output=True)
         run([str(ROOT / 'scripts/uninstall.sh'), *options], stdin=subprocess.DEVNULL)
         assert run(['docker', 'volume', 'ls', '-q', '--filter',

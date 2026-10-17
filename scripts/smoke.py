@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise real Docker, SSH, Git, HTTP authorization, database outage, and restart recovery.
 Uses an isolated Compose project and removes only that project's containers/volumes.
-Initializes no dependencies; Docker builds the images. Ports 18080, 18443, 12222 must be free.
+Initializes no dependencies; Docker builds the images. Ports 1741, 12222 must be free.
 """
 import argparse
 import http.cookiejar
@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
-ORIGIN = 'http://localhost:18080'
+ORIGIN = 'http://localhost:1741'
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--sources-env-file', type=Path, help='Compose build source overrides, e.g. deploy/sources.public.env')
 parser.add_argument('--browser-test', action='store_true', help='also run Python Playwright frontend journeys')
@@ -68,10 +68,9 @@ with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
     tmp = Path(temporary)
     password = secrets.token_urlsafe(24)
     envfile = tmp / '.env'
-    envfile.write_text(f"PUBLIC_ORIGIN={ORIGIN}\nSITE_ADDRESS=http://localhost:80\n"
-                       f"CHUSQL_ROOT_PASSWORD={secrets.token_urlsafe(24)}\nCHUSQL_PASSWORD={secrets.token_urlsafe(24)}\n"
+    envfile.write_text(f"CHUSQL_ROOT_PASSWORD={secrets.token_urlsafe(24)}\nCHUSQL_PASSWORD={secrets.token_urlsafe(24)}\n"
                        f"REGISTRY_PREFIX={os.environ.get('REGISTRY_PREFIX', '')}\n"
-                       'DEBIAN_MIRROR=mirrors.ustc.edu.cn\nALLOW_REGISTRATION=true\nHTTP_BIND=127.0.0.1\nHTTP_PORT=18080\nHTTPS_PORT=18443\nSSH_BIND=127.0.0.1\nSSH_PORT=12222\n')
+                       'DEBIAN_MIRROR=mirrors.ustc.edu.cn\nALLOW_REGISTRATION=true\nSSH_BIND=127.0.0.1\nSSH_PORT=12222\n')
     envfile.chmod(0o600)
     project = 'chublog-test-' + secrets.token_hex(4)
     compose = ['docker', 'compose', '--env-file', str(envfile)]

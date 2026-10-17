@@ -5,7 +5,7 @@
 ## 请求约定
 
 - 全部正文使用 JSON。
-- 同源 `Origin` 必须等于 `PUBLIC_ORIGIN`，例如 `https://blog.example.com`。
+- 同源 `Origin` 必须与可信反向代理传入的原始协议、主机及端口完全一致，例如 `https://blog.example.com`；无需域名环境变量。转发头的信任边界见[部署说明](deployment.md)。
 - 响应含 `Cache-Control: no-store`。
 - 登录 Cookie 为 `HttpOnly; SameSite=Strict; Secure`，仅 localhost HTTP 开发场景省略 Secure。
 

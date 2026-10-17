@@ -9,11 +9,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_KEYS = ('CHUSQL_ROOT_PASSWORD', 'CHUSQL_PASSWORD')
-RETIRED_KEYS = ('ADMIN_USERNAME', 'ADMIN_PASSWORD_HASH')
+RETIRED_KEYS = ('ADMIN_USERNAME', 'ADMIN_PASSWORD_HASH', 'PUBLIC_ORIGIN', 'SITE_ADDRESS',
+                'SITE_TITLE', 'HTTP_PORT', 'HTTPS_PORT', 'HTTP_BIND')
 
 
 def read_config(path):
@@ -26,7 +26,7 @@ def read_config(path):
     return values
 
 
-def configure(path, site):
+def configure(path):
     text = path.read_text() if path.exists() else (ROOT / '.env.example').read_text()
     values = read_config(path if path.exists() else ROOT / '.env.example')
     changes = {}
@@ -42,19 +42,6 @@ def configure(path, site):
             if values.get(key) and not values[key].startswith('replace-with-'):
                 raise RuntimeError(f'{key} 环境覆盖与已保存口令不同，已停止以避免破坏现有数据库访问。')
             changes[key] = value
-    if site:
-        if any(c.isspace() for c in site):
-            raise RuntimeError('--site 不能包含空白字符。')
-        parsed = urlsplit(site if '://' in site else 'https://' + site)
-        if (parsed.scheme not in ('http', 'https') or not parsed.hostname
-                or parsed.username or parsed.password or parsed.path not in ('', '/')
-                or parsed.query or parsed.fragment):
-            raise RuntimeError('--site 需要站点地址，例如 https://blog.example.com，不带路径。')
-        changes['PUBLIC_ORIGIN'] = f'{parsed.scheme}://{parsed.netloc}'
-        host = f'[{parsed.hostname}]' if ':' in parsed.hostname else parsed.hostname
-        changes['SITE_ADDRESS'] = f'http://{host}:80' if parsed.scheme == 'http' else host
-        changes['HTTP_PORT' if parsed.scheme == 'http' else 'HTTPS_PORT'] = str(
-            parsed.port or (80 if parsed.scheme == 'http' else 443))
     effective = {**values, **changes}
     if os.environ.get(DB_KEYS[0], effective.get(DB_KEYS[0])) == os.environ.get(DB_KEYS[1], effective.get(DB_KEYS[1])):
         raise RuntimeError('数据库 root 与博客数据库账号必须使用不同口令。')
@@ -100,7 +87,7 @@ def compose_command(args, envfile):
 
 
 def deploy(args):
-    configure(args.env_file, args.site)
+    configure(args.env_file)
     print('获取固定版本的外部依赖…', flush=True)
     run([sys.executable, str(ROOT / 'scripts/fetch-deps.py')])
     print('在 Docker 内构建生产镜像…', flush=True)
@@ -129,10 +116,10 @@ def deploy(args):
                 if secret:
                     last_error = last_error.replace(secret, '***')
         raise RuntimeError('数据库初始化失败，部署未完成。检查数据库日志和已有口令。\n' + last_error)
-    print('启动博客、SSH 与 Caddy…', flush=True)
-    run(compose + ['up', '-d', '--no-build', '--wait', '--wait-timeout', '90'])
-    origin = os.environ.get('PUBLIC_ORIGIN', read_config(args.env_file).get('PUBLIC_ORIGIN', ''))
-    print(f'部署完成：{origin}\n不创建初始管理员；注册账户默认为普通用户。', flush=True)
+    print('启动博客与 SSH…', flush=True)
+    run(compose + ['up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90'])
+    port = os.environ.get('WEB_PORT', read_config(args.env_file).get('WEB_PORT', '1741'))
+    print(f'部署完成：http://127.0.0.1:{port}\n不创建初始管理员；注册账户默认为普通用户。', flush=True)
 
 
 def update(args):
@@ -144,8 +131,6 @@ def update(args):
                '--env-file', str(args.env_file), '--project-name', args.project_name]
     if args.sources_env_file:
         command.extend(['--sources-env-file', str(args.sources_env_file.resolve())])
-    if args.site:
-        command.extend(['--site', args.site])
     os.execv(sys.executable, command)
 
 
@@ -171,7 +156,6 @@ def main():
     parser.add_argument('--env-file', type=Path, default=ROOT / '.env')
     parser.add_argument('--sources-env-file', type=Path, help='optional public/build source overrides')
     parser.add_argument('--project-name', default='chublog', help='Compose project name (default: chublog)')
-    parser.add_argument('--site', help='site URL; a bare hostname uses HTTPS')
     parser.add_argument('--purge', action='store_true', help='uninstall only: permanently delete project volumes')
     args = parser.parse_args()
     if args.purge and args.action != 'uninstall':

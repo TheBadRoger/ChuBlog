@@ -19,7 +19,7 @@
 
 ## 本地开发
 
-需要 Node.js 22.22 或更高版本，Docker 前端镜像使用 Node.js 24。先启动 API，并将其 `PUBLIC_ORIGIN` 设为浏览器使用的地址，例如 `http://127.0.0.1:4321`。
+需要 Node.js 22.22 或更高版本，Docker 前端镜像使用 Node.js 24。先启动 API。无需配置公网域名。
 
 ```sh
 cd apps/web
@@ -28,14 +28,14 @@ cp .env.example .env
 npm run dev
 ```
 
-打开 `http://127.0.0.1:4321`。`API_BASE_URL` 默认 `http://127.0.0.1:3001`，开发服务器将 `/api` 请求转发到该地址。`PUBLIC_ORIGIN` 用于显示正确的服务器 SSH 主机名，应与后端配置及浏览器地址一致。`SSH_PORT` 控制发布说明中的端口。
+打开 `http://127.0.0.1:4321`。`API_BASE_URL` 默认 `http://127.0.0.1:3001`，开发和生产均通过 Astro `/api` 路由转发到该地址，账户页面从当前请求读取 SSH 主机名。`SSH_PORT` 控制发布说明中的端口。
 
 ```sh
 npm run build
 npm test
 ```
 
-构建同时检查 Astro 和 TypeScript。生产运行 `npm start` 只启动页面服务，API 同源转发由 Caddy 提供，见[部署说明](deployment.md)。
+构建同时检查 Astro 和 TypeScript。生产运行 `npm start` 提供页面和 API 同源转发，Docker 默认仅映射 `127.0.0.1:1741`，见[部署说明](deployment.md)。
 
 ## 安全与访问
 
