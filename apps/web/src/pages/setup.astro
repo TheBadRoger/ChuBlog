@@ -1,6 +1,7 @@
 ---
 import Base from '../layouts/Base.astro';
 import { readApi, type SiteState } from '../lib/api';
+const tokenCommand = String.raw`docker compose --env-file .env -f deploy/compose.yaml exec -T api sh -c 'cat /data/setup-token && printf "\n"'`;
 let available = true;
 try {
   if ((await readApi<SiteState>('/api/site')).installed) return Astro.redirect('/login');
@@ -23,8 +24,11 @@ try {
         <fieldset>
           <legend>站长账户</legend>
           <label for="setup-username">用户名</label>
-          <input id="setup-username" name="username" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z][a-z0-9\-]{2,31}" aria-describedby="setup-username-help" />
-          <p class="field-help" id="setup-username-help">3–32 位小写字母、数字或短横线，以字母开头。</p>
+          <input id="setup-username" name="username" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z]{3,32}" aria-describedby="setup-username-help" />
+          <p class="field-help" id="setup-username-help">3–32 位小写英文字母，作为唯一登录账号。</p>
+          <label for="setup-nickname">昵称</label>
+          <input id="setup-nickname" name="nickname" autocomplete="nickname" required maxlength="128" aria-describedby="setup-nickname-help" />
+          <p class="field-help" id="setup-nickname-help">1–128 个 UTF-8 字节，支持中文和表情，可以重复。</p>
           <label for="setup-password">密码</label>
           <input id="setup-password" name="password" type="password" autocomplete="new-password" required maxlength="1024" aria-describedby="setup-password-help" />
           <p class="field-help" id="setup-password-help">12–1024 字节，请使用较长且不重复的密码。</p>
@@ -36,7 +40,7 @@ try {
           <label for="setup-token">安装密钥</label>
           <input id="setup-token" name="token" type="password" autocomplete="off" required maxlength="43" aria-describedby="setup-token-help" />
           <p class="field-help" id="setup-token-help">从服务器获取部署时生成的安装密钥，用于确认你有权初始化这个网站。</p>
-          <details><summary>如何获取安装密钥</summary><p>在服务器的项目根目录执行以下命令，复制输出的密钥：</p><pre tabindex="0"><code>docker compose --env-file .env -f deploy/compose.yaml exec api cat /data/setup-token</code></pre><p>使用自定义配置文件或项目名时，沿用部署时的参数。不要公开或分享密钥。</p></details>
+          <details><summary>如何获取安装密钥</summary><p>在服务器的项目根目录执行以下命令，复制输出的密钥：</p><pre tabindex="0"><code>{tokenCommand}</code></pre><p>使用自定义配置文件或项目名时，沿用部署时的参数。不要公开或分享密钥。</p></details>
         </fieldset>
         <p class="form-status" role="status" aria-live="polite"></p>
         <button class="button" type="submit">完成安装</button>

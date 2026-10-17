@@ -86,6 +86,7 @@ pub struct InstallInput {
     name: String,
     description: String,
     username: String,
+    nickname: String,
     password: String,
 }
 pub async fn install(
@@ -116,6 +117,7 @@ pub async fn install(
     };
     site.validate().map_err(bad)?;
     accounts::username(&input.username).map_err(bad)?;
+    accounts::nickname(&input.nickname).map_err(bad)?;
     let _permit = app
         .hash_slots
         .clone()
@@ -123,7 +125,7 @@ pub async fn install(
         .map_err(|_| ApiError(StatusCode::TOO_MANY_REQUESTS, "认证服务繁忙".into()))?;
     let hash = accounts::hash_password(input.password).await.map_err(bad)?;
     store
-        .install(&site, &input.username, &hash)
+        .install(&site, &input.username, &input.nickname, &hash)
         .await
         .map_err(accounts::database_error)?;
     let pending = if let Err(error) = crate::starter::ensure(&app).await {

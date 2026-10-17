@@ -11,6 +11,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+SETUP_TOKEN_COMMAND = 'exec -T api sh -c \'cat /data/setup-token && printf "\\n"\''
 DB_KEYS = ('CHUSQL_ROOT_PASSWORD', 'CHUSQL_PASSWORD')
 RETIRED_KEYS = ('ADMIN_USERNAME', 'ADMIN_PASSWORD_HASH', 'PUBLIC_ORIGIN', 'SITE_ADDRESS',
                 'SITE_TITLE', 'HTTP_PORT', 'HTTPS_PORT', 'HTTP_BIND', 'SSH_PORT', 'SSH_BIND')
@@ -106,7 +107,8 @@ def deploy(args):
         build.append('--with-cli')
     run(build)
     compose = compose_command(args, args.env_file)
-    print('启动数据库并初始化博客数据库与专用账号…', flush=True)
+    print('暂停 API 写入并初始化博客数据库与专用账号…', flush=True)
+    run(compose + ['stop', 'api'])
     run(compose + ['up', '-d', '--no-build', '--remove-orphans', 'db'])
     deadline = time.monotonic() + 120
     last_error = ''
@@ -128,7 +130,7 @@ def deploy(args):
     print('启动博客与 HTTPS Git 接收服务…', flush=True)
     run(compose + ['up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90'])
     port = os.environ.get('WEB_PORT', read_config(args.env_file).get('WEB_PORT', '1741'))
-    print(f'部署完成：http://127.0.0.1:{port}\n首次访问 /setup 完成安装并创建唯一站长；普通注册不授予站长权限。\n安装密钥：使用相同 Compose 参数执行 exec api cat /data/setup-token 获取。', flush=True)
+    print(f'部署完成：http://127.0.0.1:{port}\n首次访问 /setup 完成安装并创建唯一站长；普通注册不授予站长权限。\n安装密钥：使用相同 Compose 参数执行 {SETUP_TOKEN_COMMAND} 获取。', flush=True)
 
 
 def update(args):

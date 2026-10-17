@@ -70,12 +70,15 @@ pub async fn atomic(path: &FilePath, bytes: &[u8], mode: u32) -> Result<()> {
 }
 pub(crate) fn username(value: &str) -> Result<()> {
     ensure!(
-        (3..=32).contains(&value.len())
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            && value.starts_with(|c: char| c.is_ascii_lowercase()),
-        "用户名必须为 3–32 位小写字母、数字或短横线，以字母开头"
+        (3..=32).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_lowercase()),
+        "用户名必须为 3–32 位小写英文字母"
+    );
+    Ok(())
+}
+pub(crate) fn nickname(value: &str) -> Result<()> {
+    ensure!(
+        (1..=128).contains(&value.len()),
+        "昵称需要 1–128 个 UTF-8 字节"
     );
     Ok(())
 }
@@ -116,18 +119,75 @@ pub fn database_error(error: crate::accounts_db::Error) -> ApiError {
         Error::NotFound => StatusCode::NOT_FOUND,
         Error::Denied => StatusCode::FORBIDDEN,
         Error::Quota => StatusCode::BAD_REQUEST,
-        Error::Database(_) => {
+        Error::InstallationConflict => StatusCode::CONFLICT,
+        Error::Database(source) => {
+            let (reason, message) = database_problem(&source);
             tracing::error!(
                 action = "account_database_unavailable",
+                reason,
+                database_detail = database_detail(&source),
+                operation = source
+                    .downcast_ref::<&'static str>()
+                    .copied()
+                    .unwrap_or("connect_or_decode"),
                 "账户数据库操作失败"
             );
-            return ApiError(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "账户数据库暂时不可用".into(),
-            );
+            return ApiError(StatusCode::SERVICE_UNAVAILABLE, message.into());
         }
     };
     ApiError(status, error.to_string())
+}
+// Only fixed diagnostic labels reach logs; server errors can contain submitted values.
+fn database_detail(source: &anyhow::Error) -> &'static str {
+    let Some(chusql_driver::Error::Server { message, .. }) =
+        source.downcast_ref::<chusql_driver::Error>()
+    else {
+        return "connection_or_decode";
+    };
+    if message.starts_with("NOT NULL: column id ") {
+        "id_not_generated"
+    } else if message.starts_with("NOT NULL:") {
+        "required_column_missing"
+    } else if message.starts_with("UNIQUE:") {
+        "unique_constraint"
+    } else if message.starts_with("cannot put ") {
+        "column_type_mismatch"
+    } else if message.starts_with("invalid ENUM value") {
+        "enum_value_rejected"
+    } else if message.starts_with("timestamp must ") {
+        "timestamp_format"
+    } else if message.starts_with("value is longer than ") {
+        "column_length"
+    } else {
+        "unclassified_server_error"
+    }
+}
+fn database_problem(source: &anyhow::Error) -> (&'static str, &'static str) {
+    match source.downcast_ref::<chusql_driver::Error>() {
+        Some(chusql_driver::Error::Server { code, message }) => match code.as_str() {
+            "forbidden" => (
+                "permissions",
+                "账户数据库权限配置异常，请重新执行部署初始化",
+            ),
+            "unauthorized" => (
+                "credentials",
+                "账户数据库连接凭据校验失败，请核对数据库配置",
+            ),
+            _ if message.contains("unknown column")
+                || message.contains("unknown table")
+                || message.contains("unknown database") =>
+            {
+                ("schema", "账户数据库结构与当前版本不一致，请核对初始化结果")
+            }
+            _ => ("query", "账户数据库操作失败，请查看服务日志中的原因分类"),
+        },
+        Some(
+            chusql_driver::Error::Io(_)
+            | chusql_driver::Error::Timeout
+            | chusql_driver::Error::Closed,
+        ) => ("connection", "账户数据库暂时不可用，请稍后重试"),
+        _ => ("data", "账户数据校验失败，请核对数据库结构与记录"),
+    }
 }
 async fn authenticate(
     app: &App,
@@ -263,16 +323,24 @@ pub struct Login {
     username: String,
     password: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Register {
+    username: String,
+    nickname: String,
+    password: String,
+}
 pub async fn register(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
-    Json(input): Json<Login>,
+    Json(input): Json<Register>,
 ) -> ApiResult<Json<Value>> {
     origin(&headers)?;
     if !app.registration {
         return Err(ApiError(StatusCode::FORBIDDEN, "注册已关闭".into()));
     }
     username(&input.username).map_err(bad)?;
+    nickname(&input.nickname).map_err(bad)?;
     password(&input.password).map_err(bad)?;
     rate(&mut *app.accounts.lock().await)?;
     let _permit = app
@@ -283,7 +351,7 @@ pub async fn register(
     let hash = hash_password(input.password).await.map_err(internal)?;
     let user = store(&app)
         .await
-        .register(&input.username, &hash)
+        .register(&input.username, &input.nickname, &hash)
         .await
         .map_err(database_error)?;
     tracing::info!(action = "register", user = %user.username);
@@ -486,4 +554,63 @@ pub async fn git_credentials(app: &App, name: &str, secret: String) -> ApiResult
         return Err(ApiError(StatusCode::FORBIDDEN, "未授权访问文章仓库".into()));
     }
     Ok(user.hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn database_diagnostics_classify_write_failures_without_exposing_values() {
+        for (detail, expected) in [
+            ("NOT NULL: column id cannot be null", "id_not_generated"),
+            ("cannot put this value into TInt", "column_type_mismatch"),
+            (
+                "invalid ENUM value for blog_permission: private input",
+                "enum_value_rejected",
+            ),
+            (
+                "timestamp must look like YYYY-MM-DD HH:MM:SS",
+                "timestamp_format",
+            ),
+            ("value is longer than 32 characters", "column_length"),
+            (
+                "private SQL containing a password hash",
+                "unclassified_server_error",
+            ),
+        ] {
+            let error = anyhow::Error::new(chusql_driver::Error::Server {
+                code: "query_error".into(),
+                message: detail.into(),
+            })
+            .context("create_account");
+            assert_eq!(database_detail(&error), expected);
+        }
+    }
+    #[test]
+    fn database_errors_report_safe_categories_instead_of_one_outage_message() {
+        for (code, detail, expected) in [
+            ("forbidden", "administrator required", "权限配置异常"),
+            (
+                "unauthorized",
+                "secret credential detail",
+                "连接凭据校验失败",
+            ),
+            (
+                "query_error",
+                "unknown column: nickname",
+                "结构与当前版本不一致",
+            ),
+        ] {
+            let error = database_error(crate::accounts_db::Error::Database(
+                chusql_driver::Error::Server {
+                    code: code.into(),
+                    message: detail.into(),
+                }
+                .into(),
+            ));
+            assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(error.1.contains(expected));
+            assert!(!error.1.contains(detail));
+        }
+    }
 }

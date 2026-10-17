@@ -8,7 +8,7 @@ const remote = `${scheme}//${host}/git/content.git`;
   <div class="account-shell">
     <header class="page-heading"><h1>账户</h1><p id="account-status" role="status">正在读取账户…</p></header>
     <div id="account-content" hidden>
-      <div class="account-identity"><div><strong id="account-name"></strong><span class="role-label" id="account-role"></span></div><button id="logout" class="button button-quiet" type="button">退出登录</button></div>
+      <div class="account-identity"><div><strong id="account-name"></strong><span id="account-username" class="role-label"></span><span class="role-label" id="account-role"></span></div><button id="logout" class="button button-quiet" type="button">退出登录</button></div>
       <section class="settings-section" aria-labelledby="publishing-heading">
         <h2 id="publishing-heading">从本地发布文章</h2><p class="section-description">获得站长授权后，通过 HTTPS 克隆自己的文章仓库。Git 会提示输入网站用户名和密码；也可以通过系统凭据管理器保存。</p>
         <p id="publish-status" class="section-description"></p>

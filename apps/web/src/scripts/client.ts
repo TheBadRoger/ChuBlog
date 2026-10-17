@@ -1,7 +1,7 @@
 export {};
 type Role = 'reader' | 'publisher' | 'admin';
 interface Grant { enabled: boolean; role: Role }
-interface Account { username: string; permissions: Grant; csrf: string }
+interface Account { username: string; nickname: string; permissions: Grant; csrf: string }
 let csrf: string | undefined;
 const roles: Record<Role, string> = { reader: '普通用户', publisher: '作者', admin: '管理员' };
 
@@ -50,7 +50,7 @@ formAction('setup-form', async (data, form) => {
   checkPassword(password);
   if (password !== value(data, 'confirm')) throw new Error('两次输入的密码不一致。');
   await api('/api/setup', 'POST', { token: value(data, 'token').trim(), name: value(data, 'name'),
-    description: value(data, 'description'), username: value(data, 'username'), password });
+    description: value(data, 'description'), username: value(data, 'username'), nickname: value(data, 'nickname'), password });
   form.reset();
   location.assign('/login?installed=1');
 });
@@ -60,7 +60,7 @@ formAction('auth-form', async (data, form) => {
   if (form.dataset.mode === 'register') {
     checkPassword(credentials.password);
     if (credentials.password !== value(data, 'confirm')) throw new Error('两次输入的密码不一致。');
-    await api('/api/auth/register', 'POST', credentials);
+    await api('/api/auth/register', 'POST', { ...credentials, nickname: value(data, 'nickname') });
     // Registration succeeded even if the following login is temporarily rate-limited.
     try { await api('/api/auth/login', 'POST', credentials); }
     catch { location.assign('/login?registered=1'); return; }
@@ -95,13 +95,14 @@ async function loadAdmin(account: Account) {
   section.hidden = false;
   try {
     const [users, state] = await Promise.all([
-      api<Record<string, Grant>>('/api/admin/users'),
+      api<Record<string, Grant & { nickname: string }>>('/api/admin/users'),
       api<{ pending: Record<string, { commit: string; reason: string }> }>('/api/admin/status'),
     ]);
     const list = document.querySelector<HTMLElement>('#admin-users')!;
     for (const [username, grant] of Object.entries(users)) {
       const form = element('form'); form.className = 'admin-user';
       form.append(element('h4', username === account.username ? `${username}（当前账户）` : username));
+      form.append(element('p', grant.nickname));
       if (username === account.username) { form.append(element('p', '当前管理员')); list.append(form); continue; }
       const controls = element('div'); controls.className = 'admin-user-controls';
       const select = element('select'); select.setAttribute('aria-label', `${username} 的角色`);
@@ -143,7 +144,8 @@ async function loadAccount() {
     if (!content) return;
     content.hidden = false;
     showStatus(document.querySelector('#account-status'), '');
-    document.querySelector('#account-name')!.textContent = account.username;
+    document.querySelector('#account-name')!.textContent = account.nickname;
+    document.querySelector('#account-username')!.textContent = `@${account.username}`;
     document.querySelector('#account-role')!.textContent = roles[account.permissions.role];
     document.querySelector('#publish-status')!.textContent = account.permissions.role === 'reader'
       ? '发布和克隆文章仓库需要由站长授予发布权限。'

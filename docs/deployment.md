@@ -25,11 +25,11 @@
 
 ## 首次安装网站
 
-访问 `/setup`，填写网站名称、简介、站长账号和密码。安装密钥通过服务器获取：
+访问 `/setup`，填写网站名称、简介、站长账号、昵称和密码。安装密钥通过服务器获取：
 
 ```sh
 docker compose --env-file .env -f deploy/compose.yaml \
-  exec api cat /data/setup-token
+  exec -T api sh -c 'cat /data/setup-token && printf "\n"'
 ```
 
 密钥以权限 `600` 保存在私有卷中。安装事务将唯一 `MASTER` 账户和网站配置写入 ChuSQL，成功后入口关闭。普通注册创建 `MEMBER`，站长可在账户页授予作者权限。

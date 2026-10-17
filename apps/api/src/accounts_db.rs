@@ -13,6 +13,7 @@ pub enum Error {
     NotFound,
     Denied,
     Quota,
+    InstallationConflict,
 }
 
 impl From<anyhow::Error> for Error {
@@ -28,6 +29,7 @@ impl std::fmt::Display for Error {
             Self::NotFound => "用户不存在",
             Self::Denied => "权限不足或已变更",
             Self::Quota => "用户配额已满",
+            Self::InstallationConflict => "账户表已有记录，请核对安装状态或使用新的安装数据库",
         })
     }
 }
@@ -83,6 +85,7 @@ impl Level {
 pub struct User {
     pub id: i64,
     pub username: String,
+    pub nickname: String,
     pub hash: String,
     pub created_at: String,
     pub last_login_at: Option<String>,
@@ -96,7 +99,7 @@ impl User {
             && self.level == other.level
     }
     pub fn view(&self) -> Value {
-        serde_json::json!({"id":self.id,"username":self.username,"created_at":self.created_at,
+        serde_json::json!({"id":self.id,"username":self.username,"nickname":self.nickname,"created_at":self.created_at,
             "last_login_at":self.last_login_at,"permission_level":self.level.as_str()})
     }
 }
@@ -104,7 +107,8 @@ impl User {
 pub struct Store {
     pub database: Database,
 }
-const COLUMNS: &str = "id, username, password_hash, created_at, last_login_at, permission_level";
+const COLUMNS: &str =
+    "id, username, password_hash, created_at, last_login_at, permission_level, nickname";
 fn require(condition: bool, message: &'static str) -> anyhow::Result<()> {
     if !condition {
         anyhow::bail!(message);
@@ -114,13 +118,56 @@ fn require(condition: bool, message: &'static str) -> anyhow::Result<()> {
 fn now() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
+fn master_insert(name: &str, nickname: &str, hash: &str) -> Query {
+    Query::new("INSERT INTO blog_users (username, nickname, password_hash, created_at, permission_level) VALUES (")
+        .bind(name).push(", ").bind(nickname).push(", ").bind(hash)
+        .push(", ").bind(now().as_str()).push(", 'MASTER')")
+}
+
+// The deployment probe uses only synthetic values, so its full database error is safe to report.
+pub async fn verify_empty_install(db: &Client) -> anyhow::Result<()> {
+    db.query("BEGIN").await?;
+    let result = async {
+        for table in ["blog_users", "blog_site"] {
+            let count = db.query(&format!("SELECT count(*) FROM {table}")).await?;
+            if count.rows.first().and_then(|row| row.first()).and_then(Value::as_u64) != Some(0) {
+                return Ok(());
+            }
+        }
+        let query = master_insert("installationcheck", "安装检查", "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRmb3JjaGVjaw$YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU");
+        db.query(query.as_str()).await.context("安装预检：创建账户失败（使用固定检查数据）")?;
+        let result = db.query("SELECT id FROM blog_users WHERE username = 'installationcheck'").await?;
+        let id = result.rows.first().and_then(|row| row.first()).and_then(Value::as_i64)
+            .filter(|id| *id > 0).context("安装预检：账户 ID 应为正整数且自动生成")?;
+        let query = Query::new("INSERT INTO blog_site (id, name, description, master_user_id, installed_at) VALUES (1, 'installationcheck', '', ")
+            .bind(id).push(", ").bind(now().as_str()).push(")");
+        db.query(query.as_str()).await.context("安装预检：写入网站信息失败（使用固定检查数据）")?;
+        Ok::<(), anyhow::Error>(())
+    }.await;
+    let rollback = db.query("ROLLBACK").await.context("回滚安装预检失败");
+    result?;
+    rollback?;
+    Ok(())
+}
+
 async fn sql(db: &Client, query: &str) -> Result<QueryResult> {
+    let operation = match query {
+        q if q.starts_with("INSERT INTO blog_users ") => "create_account",
+        q if q.starts_with("INSERT INTO blog_site ") => "record_installation",
+        q if q.starts_with("SELECT count(*) FROM blog_users") => "count_accounts",
+        "BEGIN" => "begin_transaction",
+        "COMMIT" => "commit_transaction",
+        "ROLLBACK" => "rollback_transaction",
+        q if q.starts_with("SELECT ") => "read_accounts_or_site",
+        q if q.starts_with("UPDATE ") => "update_account_or_site",
+        _ => "account_query",
+    };
     db.query(query)
         .await
-        .map_err(|error| Error::Database(error.into()))
+        .map_err(|error| Error::Database(anyhow::Error::new(error).context(operation)))
 }
 fn decode(row: &[Value]) -> anyhow::Result<User> {
-    require(row.len() == 6, "账户记录字段数量无效")?;
+    require(row.len() == 7, "账户记录字段数量无效")?;
     let id = row[0]
         .as_i64()
         .filter(|id| *id > 0)
@@ -133,6 +180,8 @@ fn decode(row: &[Value]) -> anyhow::Result<User> {
     };
     let username = text(1)?;
     crate::accounts::username(&username)?;
+    let nickname = text(6)?;
+    crate::accounts::nickname(&nickname)?;
     let hash = text(2)?;
     let parsed = argon2::PasswordHash::new(&hash).map_err(|_| anyhow::anyhow!("密码哈希无效"))?;
     require(
@@ -155,6 +204,7 @@ fn decode(row: &[Value]) -> anyhow::Result<User> {
     Ok(User {
         id,
         username,
+        nickname,
         hash,
         created_at,
         last_login_at,
@@ -305,14 +355,20 @@ impl Store {
         db.close().await;
         Ok(())
     }
-    pub async fn install(&self, site: &crate::setup::Site, name: &str, hash: &str) -> Result<()> {
+    pub async fn install(
+        &self,
+        site: &crate::setup::Site,
+        name: &str,
+        nickname: &str,
+        hash: &str,
+    ) -> Result<()> {
         self.transaction(|db| async move {
             let installed = sql(&db, "SELECT id FROM blog_site WHERE id = 1").await?;
             if !installed.rows.is_empty() { return Err(Error::Conflict); }
             let count = sql(&db, "SELECT count(*) FROM blog_users").await?;
-            require(count.rows.first().and_then(|row| row.first()).and_then(Value::as_u64) == Some(0), "安装要求空账户表")?;
-            let query = Query::new("INSERT INTO blog_users (username, password_hash, created_at, permission_level) VALUES (")
-                .bind(name).push(", ").bind(hash).push(", ").bind(now().as_str()).push(", 'MASTER')");
+            let count = count.rows.first().and_then(|row| row.first()).and_then(Value::as_u64).context("安装账户数量查询无效")?;
+            if count != 0 { return Err(Error::InstallationConflict); }
+            let query = master_insert(name, nickname, hash);
             sql(&db, query.as_str()).await?;
             let master = get(&db, name).await?.ok_or(Error::NotFound)?;
             let query = Query::new("INSERT INTO blog_site (id, name, description, master_user_id, installed_at) VALUES (1, ")
@@ -322,7 +378,7 @@ impl Store {
             Ok(())
         }).await
     }
-    pub async fn register(&self, name: &str, hash: &str) -> Result<User> {
+    pub async fn register(&self, name: &str, nickname: &str, hash: &str) -> Result<User> {
         self.transaction(|db| async move {
             if sql(&db, "SELECT id FROM blog_site WHERE id = 1").await?.rows.is_empty() { return Err(Error::Denied); }
             if get(&db, name).await?.is_some() { return Err(Error::Conflict); }
@@ -330,8 +386,8 @@ impl Store {
             let count = count.rows.first().and_then(|row| row.first()).and_then(Value::as_u64)
                 .context("用户数量查询无效")?;
             if count >= 1000 { return Err(Error::Quota); }
-            let query = Query::new("INSERT INTO blog_users (username, password_hash, created_at, last_login_at, permission_level) VALUES (")
-                .bind(name).push(", ").bind(hash).push(", ").bind(now().as_str()).push(", NULL, ").bind(Level::Member.as_str()).push(")");
+            let query = Query::new("INSERT INTO blog_users (username, nickname, password_hash, created_at, last_login_at, permission_level) VALUES (")
+                .bind(name).push(", ").bind(nickname).push(", ").bind(hash).push(", ").bind(now().as_str()).push(", NULL, ").bind(Level::Member.as_str()).push(")");
             sql(&db, query.as_str()).await?;
             get(&db, name).await?.ok_or(Error::NotFound)
         }).await
@@ -409,6 +465,7 @@ mod tests {
             Value::from("2026-01-01 00:00:00"),
             Value::Null,
             Value::Null,
+            Value::from("测试昵称"),
         ];
         for level in [Level::Banned, Level::Member, Level::Author, Level::Master] {
             row[5] = Value::from(level.as_str());

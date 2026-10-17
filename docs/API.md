@@ -10,13 +10,13 @@
 | --- | --- | --- |
 | GET | `/api/health` | 公共，返回 API 存活状态 |
 | GET | `/api/site` | 公共，返回 `{installed,site,owner}`；site 为 `{name,description}` 或 null |
-| POST | `/api/setup` | Origin + 安装密钥；`{token,name,description,username,password}` |
+| POST | `/api/setup` | Origin + 安装密钥；`{token,name,description,username,nickname,password}` |
 | GET | `/api/posts` | 公共，返回 `{commit,posts:[metadata]}`，公开文章按日期倒序 |
 | GET | `/api/posts/:slug` | 公共，文章入口及页面、资源列表 |
 | GET | `/api/posts/:slug/pages/:name` | 公共，文章指定页面 |
 | GET | `/api/assets/:slug/:name` | 公共，文章图片 |
 | GET | `/api/stats` | 公共，文章数、标签数、正文大小与启动以来文章请求数 |
-| POST | `/api/auth/register` | 安装后 + Origin；`{username,password}`，创建 MEMBER |
+| POST | `/api/auth/register` | 安装后 + Origin；`{username,nickname,password}`，创建 MEMBER |
 | POST | `/api/auth/login` | Origin；`{username,password}`，返回用户信息、role、csrf 及 Cookie |
 | POST | `/api/auth/logout` | 登录 + Origin + CSRF，注销会话 |
 | GET | `/api/account` | 登录，返回用户信息、permissions 和 csrf |
@@ -27,7 +27,7 @@
 
 ## 账户与权限
 
-用户信息包含 `id,username,created_at,last_login_at,permission_level`，密码哈希仅在数据库中保存。用户名为 3–32 位小写字母、数字或短横线，以字母开头；密码为 12–1024 字节。
+用户信息包含 `id,username,nickname,created_at,last_login_at,permission_level`，密码哈希仅在数据库中保存。用户名为 3–32 位小写英文字母且唯一；昵称为 1–128 个 UTF-8 字节，可以重复，作为展示属性保存。登录、授权和仓库路径均使用用户名及用户 ID。密码为 12–1024 字节。
 
 | permission_level | role / enabled | 权限 |
 | --- | --- | --- |
@@ -44,7 +44,7 @@
 
 安装密钥的获取方法见[部署文档](deployment.md#首次安装网站)。网站名称为 1–120 字节，简介最多 1000 字节，两者去除两端空白并校验控制字符。
 
-安装事务创建真实站长账户及 `blog_site` 单例记录，完成后再次提交返回 409。响应包含 `starter_articles_pending`，为 true 时由后台继续准备内置文章。`owner` 返回站长用户名，首页据此生成文章链接。数据库读取失败返回 503。
+安装事务创建真实站长账户及 `blog_site` 单例记录，完成后再次提交返回 409。响应包含 `starter_articles_pending`，为 true 时由后台继续准备内置文章。`owner` 返回站长用户名，首页据此生成文章链接。已有账户与安装状态冲突时返回 409。数据库故障按权限、凭据、结构、连接或数据校验分类提示；日志记录原因分类和操作阶段。
 
 ## 文章与同步
 
@@ -72,3 +72,7 @@ Rust 网关调用 Git 自带的 `git http-backend`，固定 Hook 检查候选提
 业务错误返回 `{"error":"说明"}`。常见状态为 401 身份验证失败、403 权限或来源校验失败、404 资源缺失或私有、409 冲突、429 限流、503 数据库服务故障。Git 的 401 同时携带 Basic 认证挑战。
 
 JSON 格式、内容类型与字段错误使用 400/415/422，请求体超限使用 413；内部异常返回通用错误。完整请求限额见[安全文档](security.md)。
+
+## SQL 值编码
+
+所有外部字段通过 ChuSQL 驱动的 `Query.bind()` 进行字面量编码，固定 SQL 结构由代码提供。驱动采用客户端编码，字符串中的单引号按 ChuSQL 规则转为两个单引号。昵称中的引号、SQL 片段、中文、表情及控制字符始终作为值处理；服务端解析与驱动编码由真实数据库测试共同验证。用户输入的 UTF-8 字节限制与数据库字段约束同时生效。

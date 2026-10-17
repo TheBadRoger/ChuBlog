@@ -31,10 +31,10 @@
 
    ```sh
    docker compose --env-file .env -f deploy/compose.yaml \
-     exec api cat /data/setup-token
+     exec -T api sh -c 'cat /data/setup-token && printf "\n"'
    ```
 
-4. 通过服务器反向代理打开网站的 `/setup`，填写网站名称、简介、站长账号、密码和安装密钥。服务器本机也可访问 `http://127.0.0.1:1741/setup`。
+4. 通过服务器反向代理打开网站的 `/setup`，填写网站名称、简介、站长账号、昵称、密码和安装密钥。服务器本机也可访问 `http://127.0.0.1:1741/setup`。
 
 安装完成后，首页提供导航，站长仓库自动发布“发文章教程”和“开发进度”。登录站长账户即可授权作者，作者从账户页获取个人仓库地址。
 

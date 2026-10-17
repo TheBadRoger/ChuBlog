@@ -5,6 +5,7 @@ CREATE TYPE blog_permission AS ENUM ('BANNED', 'MEMBER', 'AUTHOR', 'MASTER');
 CREATE TABLE blog_users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(32) NOT NULL UNIQUE,
+    nickname VARCHAR(128) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     created_at TIMESTAMP NOT NULL,
     last_login_at TIMESTAMP,

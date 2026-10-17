@@ -15,8 +15,9 @@ const register = Astro.url.searchParams.get('mode') === 'register';
     {Astro.url.searchParams.get('registered') === '1' && <p class="notice">账户已创建，请登录。</p>}
     <form id="auth-form" data-mode={register ? 'register' : 'login'}>
       <label for="username">用户名</label>
-      <input id="username" name="username" spellcheck="false" autocapitalize="none" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z][a-z0-9-]{2,31}" aria-describedby={register ? 'username-help' : undefined} />
-      {register && <p class="field-help" id="username-help">3 至 32 位小写字母、数字或短横线，以字母开头。</p>}
+      <input id="username" name="username" spellcheck="false" autocapitalize="none" autocomplete="username" required minlength="3" maxlength="32" pattern="[a-z]{3,32}" aria-describedby={register ? 'username-help' : undefined} />
+      {register && <p class="field-help" id="username-help">3 至 32 位小写英文字母，作为唯一登录账号。</p>}
+      {register && <><label for="nickname">昵称</label><input id="nickname" name="nickname" autocomplete="nickname" required maxlength="128" aria-describedby="nickname-help" /><p class="field-help" id="nickname-help">1–128 个 UTF-8 字节，支持中文和表情，可以与其他人重复。</p></>}
       <label for="password">密码</label>
       <input id="password" type="password" name="password" autocomplete={register ? 'new-password' : 'current-password'} required maxlength="1024" aria-describedby={register ? 'password-help' : undefined} />
       {register && <p class="field-help" id="password-help">至少 12 个字节，请使用较长且不重复的密码。</p>}

@@ -4,14 +4,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
 
 pub fn author_repository(root: &Path, identity: &str) -> Result<PathBuf> {
-    ensure!(
-        (3..=32).contains(&identity.len())
-            && identity.starts_with(|c: char| c.is_ascii_lowercase())
-            && identity
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
-        "作者仓库身份无效"
-    );
+    crate::accounts::username(identity)?;
     Ok(root.join(format!("{identity}.git")))
 }
 

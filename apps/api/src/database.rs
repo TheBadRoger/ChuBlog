@@ -5,6 +5,40 @@ use std::time::Duration;
 pub const ACCOUNTS_SQL: &str = include_str!("../sql/accounts.sql");
 pub const ARTICLES_SQL: &str = include_str!("../sql/articles.sql");
 pub const CREATE_DATABASE_SQL: &str = include_str!("../sql/create-database.sql");
+const COMPLETE_EMPTY_INSTALL_SQL: &str = include_str!("../sql/complete-empty-install.sql");
+
+// Deployment stops the API first. Root drops empty tables; the application creates their replacements.
+pub async fn complete_empty_install(db: &Client) -> Result<()> {
+    for table in ["blog_users", "blog_site"] {
+        let count = match db.query(&format!("SELECT count(*) FROM {table}")).await {
+            Ok(count) => count,
+            Err(chusql_driver::Error::Server { message, .. })
+                if message.contains("unknown table") =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let count = count
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .and_then(chusql_driver::Value::as_u64)
+            .context("安装记录数量无效")?;
+        if count != 0 {
+            let columns = db.query("SELECT * FROM blog_users LIMIT 0").await?;
+            ensure!(
+                columns.columns.iter().any(|column| column == "nickname"),
+                "账户结构缺少 nickname，且安装数据已存在；请先备份并核对账户结构"
+            );
+            return Ok(());
+        }
+    }
+    execute_script(db, COMPLETE_EMPTY_INSTALL_SQL)
+        .await
+        .context("重建空账户与安装表失败")?;
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct Database {
