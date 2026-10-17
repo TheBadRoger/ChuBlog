@@ -59,12 +59,20 @@ cargo clippy --all-targets -- -D warnings
 
 ## 联调
 
+部署镜像在 Docker 内编译，不需要宿主机 Rust 或 Haskell 工具链；运行上面的源码开发检查时仍须自行安装 Rust。准备脚本的轻量回归检查：
+
 ```sh
-python3 scripts/prepare-deploy.py --build-database
-python3 scripts/smoke.py
-python3 scripts/smoke.py --key-type rsa
+python3 scripts/test-prepare-deploy.py
+```
+
+```sh
+python3 scripts/prepare-deploy.py --sources-env-file deploy/sources.public.env
+python3 scripts/smoke.py --sources-env-file deploy/sources.public.env
+python3 scripts/smoke.py --key-type rsa \
+  --sources-env-file deploy/sources.public.env
 # 安装 Python Playwright 和 Chromium 后，可追加前端真实浏览器验证。
-python3 scripts/smoke.py --key-type rsa --browser-test
+python3 scripts/smoke.py --key-type rsa --browser-test \
+  --sources-env-file deploy/sources.public.env
 ```
 
 - 联调使用独立随机命名的 Compose 项目、本机 18080/18443/12222 端口，测试结束清理自己创建的容器与卷。

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise real Docker, SSH, Git, HTTP authorization, database outage, and restart recovery.
 Uses an isolated Compose project and removes only that project's containers/volumes.
-Run prepare-deploy.py first. Ports 18080, 18443, 12222 must be free.
+Initializes no dependencies; Docker builds the images. Ports 18080, 18443, 12222 must be free.
 """
 import argparse
 import http.cookiejar
@@ -19,6 +19,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 ORIGIN = 'http://localhost:18080'
 parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--sources-env-file', type=Path, help='Compose build source overrides, e.g. deploy/sources.public.env')
 parser.add_argument('--browser-test', action='store_true', help='also run Python Playwright frontend journeys')
 parser.add_argument('--key-type', choices=['ed25519', 'rsa'], default='ed25519')
 args = parser.parse_args()
@@ -66,7 +67,7 @@ class Client:
 with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
     tmp = Path(temporary)
     password = secrets.token_urlsafe(24)
-    hashed = run([str(ROOT / 'deploy/bin/chublog-api'), 'hash-password'], input=password, capture_output=True).stdout.strip()
+    hashed = 'temporary-build-placeholder'
     envfile = tmp / '.env'
     envfile.write_text(f"PUBLIC_ORIGIN={ORIGIN}\nSITE_ADDRESS=http://localhost:80\nADMIN_PASSWORD_HASH='{hashed}'\n"
                        f"CHUSQL_ROOT_PASSWORD={secrets.token_urlsafe(24)}\nCHUSQL_PASSWORD={secrets.token_urlsafe(24)}\n"
@@ -74,7 +75,12 @@ with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
                        'DEBIAN_MIRROR=mirrors.ustc.edu.cn\nALLOW_REGISTRATION=true\nHTTP_BIND=127.0.0.1\nHTTP_PORT=18080\nHTTPS_PORT=18443\nSSH_BIND=127.0.0.1\nSSH_PORT=12222\n')
     envfile.chmod(0o600)
     project = 'chublog-test-' + secrets.token_hex(4)
-    compose = ['docker', 'compose', '--env-file', str(envfile), '-p', project, '-f', str(ROOT / 'deploy/compose.yaml')]
+    compose = ['docker', 'compose', '--env-file', str(envfile)]
+    if args.sources_env_file:
+        if not args.sources_env_file.is_file():
+            parser.error(f'Source configuration does not exist: {args.sources_env_file}')
+        compose.extend(['--env-file', str(args.sources_env_file.resolve())])
+    compose.extend(['-p', project, '-f', str(ROOT / 'deploy/compose.yaml')])
     def database_articles():
         # Query the private DB from inside its container; no host database port is opened.
         probe = r'''set -eu
@@ -95,7 +101,12 @@ printf '%s\n' "$reply"
         return response['rows']
 
     try:
-        run(compose + ['up', '-d', '--build'])
+        run(compose + ['build', 'init', 'api', 'ssh', 'db', 'db-init', 'web'])
+        hashed = run(compose + ['run', '--rm', '--no-deps', '-T', 'api', 'hash-password'],
+                     input=password, capture_output=True).stdout.strip()
+        assert hashed.startswith('$argon2id$'), 'Container did not produce an Argon2id hash'
+        envfile.write_text(envfile.read_text().replace('temporary-build-placeholder', hashed))
+        run(compose + ['up', '-d', '--no-build'])
         admin = Client()
         wait_for(lambda: admin.call('GET', '/api/health'))
         wait_for(lambda: subprocess.run(compose + ['run', '--rm', 'db-init'], capture_output=True).returncode == 0)

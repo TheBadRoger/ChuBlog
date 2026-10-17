@@ -10,7 +10,7 @@ Rust/Axum 博客后端。作者在独立 Git 仓库中编辑文本或 Markdown�
 | --- | --- |
 | [开发与依赖](docs/development.md) | 获取代码、双 HTTPS 依赖源、开发检查与联调 |
 | [前端](docs/frontend.md) | 页面、本地开发、浏览器联调和项目技能 |
-| [部署](docs/deployment.md) | Debian 13、Docker Compose、首次初始化 |
+| [部署](docs/deployment.md) | 容器内构建、Docker Compose、首次初始化 |
 | [文章发布](docs/publishing.md) | 账户授权、个人仓库、文章清单与 Git 工作流 |
 | [API](docs/API.md) | HTTP 接口、认证、请求与错误响应 |
 | [内容与隔离](docs/security.md) | 文件白名单、容量限制、SSH 与进程边界 |
