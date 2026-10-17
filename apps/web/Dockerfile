@@ -12,10 +12,10 @@ RUN npm run build && npm prune --omit=dev --no-audit --no-fund --registry="${NPM
 
 FROM ${NODE_IMAGE}
 WORKDIR /app
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=4321 ASTRO_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=1741 ASTRO_TELEMETRY_DISABLED=1
 COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 USER node
-EXPOSE 4321
+EXPOSE 1741
 CMD ["node", "dist/server/entry.mjs"]

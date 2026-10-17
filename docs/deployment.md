@@ -4,15 +4,15 @@
 
 ## 一键部署
 
-在项目根目录执行，将示例域名替换为自己的域名，并事先配置 DNS：
+在项目根目录执行：
 
 ```sh
-scripts/deploy.sh --site https://blog.example.com
+scripts/deploy.sh
 ```
 
 脚本依次生成配置、获取固定版本的外部依赖、在 Docker 内构建镜像、启动并初始化数据库，最后启动博客并等待服务就绪。不需要另行执行 `hash-password`、`db-init` 或 `docker compose up`。
 
-首次运行自动创建权限为 `600` 的 `.env`，生成两份不同的随机数据库口令。重复部署保留已有口令和数据；需要备份 `.env` 及持久卷。不传 `--site` 时首次默认使用 `http://localhost`，已有配置则继续沿用。
+首次运行自动创建权限为 `600` 的 `.env`，生成两份不同的随机数据库口令。重复部署保留已有口令和数据；需要备份 `.env` 及持久卷。博客默认监听 `127.0.0.1:1741`，无需配置域名、站点地址或 HTTPS 端口。`.env` 中的 `WEB_PORT=1741` 同时控制程序监听、容器端口、宿主机映射和健康检查。`SSH_PORT=2222` 同样控制容器内外的 SSH 端口；例如改为 `2223` 后，映射为 `2223:2223`。两个端口必须不同，且均在 1–65535 范围内。
 
 部署不创建博客管理员，也不要求填写管理员密码。首页继续显示施工说明和导航；文章阅读、注册登录、账户设置及 SSH 服务照常启动。新注册用户均为 `reader`，第一个用户也不会自动提权。已有账户与发布授权保持有效；空站点的发布授权仍需后续确定的管理员管理流程，注册本身不授予发布权。
 
@@ -50,15 +50,17 @@ Rust API、ChuSQL 存储库和 Haskell 服务端在 Docker 多阶段构建中编
 
 ## 服务与路由
 
-Compose 编排 Astro 前端 `web`、Rust API `api`、文章 SSH 接收 `ssh`、ChuSQL 数据库 `db` 和 Caddy。`init` 初始化持久卷，`db-init` 用于首次数据库授权。
+Compose 编排 Astro 前端 `web`、Rust API `api`、文章 SSH 接收 `ssh`、ChuSQL 数据库 `db` 。`init` 初始化持久卷，`db-init` 用于首次数据库授权。
 
 `web` 是博客前端，不是 ChuSQL Web。数据库只构建 `chusql-server`、`csql-bootstrap` 与存储库，不构建或启动 `chusql-web`、`csql-web` 或数据库管理网站。
 
-Caddy 将 `/api/*` 转发到 `api:3001`，其余请求转发到 `web:4321`。Node、API 和数据库只加入内部网络，不映射宿主端口；公网入口为 Caddy 的 HTTP/HTTPS 和文章 SSH。前端容器使用非 root 用户、只读根文件系统和独立资源上限。
+前端通过同源 `/api/*` 路由转发请求到内部 `api:3001`，请求体上限 8 KiB。服务器现有的反向代理只需将整个站点转发到 `127.0.0.1:1741`，无需分别配置页面和 API。项目不启动 Caddy，不监听 80/443，也不管理域名或证书。
+
+API 和数据库不映射宿主端口；前端只映射本机回环地址，SSH 发布默认开放 2222。前端同时连接内部网络与独立的 `web-entry` 普通桥接网络，确保 Docker 实际发布 1741 端口；不能只连接 `internal` 网络。前端容器使用非 root 用户、只读根文件系统和独立资源上限。
 
 ## 腾讯云镜像
 
-`.env.example` 默认配置 `REGISTRY_PREFIX=mirror.ccs.tencentyun.com/library/`，为 Rust、Debian、Node 与 Caddy 使用腾讯云内网 Docker 镜像。该地址仅供腾讯云内网访问，见[腾讯云官方说明](https://cloud.tencent.com/document/practice/1207/45596)。
+`.env.example` 默认配置 `REGISTRY_PREFIX=mirror.ccs.tencentyun.com/library/`，为 Rust、Debian 与 Node 使用腾讯云内网 Docker 镜像。该地址仅供腾讯云内网访问，见[腾讯云官方说明](https://cloud.tencent.com/document/practice/1207/45596)。
 
 在腾讯云内网部署时保留该值；其他环境将 `REGISTRY_PREFIX` 留空以使用原始镜像名，或改为可访问且受信的镜像前缀。项目不修改宿主机 Docker 配置、不关闭 TLS，也不重启 Docker 守护进程。
 
@@ -66,7 +68,7 @@ Caddy 将 `/api/*` 转发到 `api:3001`，其余请求转发到 `web:4321`。Nod
 
 | 配置 | 默认值与用途 |
 | --- | --- |
-| `REGISTRY_PREFIX` | `mirror.ccs.tencentyun.com/library/`，用于 Rust、GHC/Haskell、Debian、Node 与 Caddy 镜像 |
+| `REGISTRY_PREFIX` | `mirror.ccs.tencentyun.com/library/`，用于 Rust、GHC/Haskell、Debian 与 Node 镜像 |
 | `DEBIAN_MIRROR` | `mirrors.tencentyun.com`，容器内 Debian 软件包源，保留 Debian 签名校验 |
 | `NPM_REGISTRY` | `https://mirrors.tencentyun.com/npm/`，前端依赖源 |
 | `CARGO_MIRROR_INDEX` | 默认 `sparse+https://rsproxy.cn/index/`；显式留空可使用 crates.io |
@@ -80,13 +82,13 @@ Rust 工具链直接来自 Rust 镜像；GHC 9.10.3 和 Stack 来自匹配 ChuSQ
 项目提供不含密码的 `deploy/sources.public.env`，使用公开 ECR Docker Library 镜像、USTC Debian 源、官方 npm 源及 RsProxy Cargo 源。外网部署与隔离联调时运行：
 
 ```sh
-scripts/deploy.sh --site https://blog.example.com \
+scripts/deploy.sh \
   --sources-env-file deploy/sources.public.env
 python3 scripts/smoke.py --key-type rsa \
   --sources-env-file deploy/sources.public.env
 ```
 
-第二份配置只覆盖下载来源，不改写 `.env` 的域名、口令等生产设置。Docker Compose 会优先使用当前 shell 中已导出的同名环境变量；切换测试配置前须检查这些覆盖。公网源连通性不能证明腾讯云内网镜像可用，内网源仍需在腾讯云服务器验证。
+第二份配置只覆盖下载来源，不改写 `.env` 的口令等生产设置。Docker Compose 会优先使用当前 shell 中已导出的同名环境变量；切换测试配置前须检查这些覆盖。公网源连通性不能证明腾讯云内网镜像可用，内网源仍需在腾讯云服务器验证。
 
 ## 构建选项与平台
 
@@ -106,14 +108,14 @@ python3 scripts/smoke.py --key-type rsa \
 
 ## 验证部署
 
-浏览器打开配置的站点，确认首页居中显示施工说明，且可以进入文章列表与账户页面。`SITE_TITLE` 控制页眉名称。检查服务状态与日志：
+在服务器本机打开 `http://127.0.0.1:1741`，或访问服务器反向代理配置的域名，确认首页显示施工说明，且可以进入文章列表与账户页面。检查服务状态与日志：
 
 ```sh
 docker compose --env-file .env -f deploy/compose.yaml ps
 docker compose --env-file .env -f deploy/compose.yaml logs --tail 100 api db
 ```
 
-`api`、`web`、`ssh`、`db` 和 `caddy` 应运行，`init` 成功退出。`db-init` 是一次性初始化任务。部署脚本对数据库初始化设有重试和超时，失败时退出，不会报告部署完成。
+`api`、`web`、`ssh` 和 `db` 应运行，`init` 成功退出。`db-init` 是一次性初始化任务。部署脚本对数据库初始化设有重试和超时，失败时退出，不会报告部署完成。
 
 用于开发环境的隔离部署回归检查：
 
@@ -121,12 +123,14 @@ docker compose --env-file .env -f deploy/compose.yaml logs --tail 100 api db
 python3 scripts/smoke-deployment.py --sources-env-file deploy/sources.public.env
 ```
 
-该检查使用独立项目与本机 18080/18443/12222 端口，验证无管理员启动、普通用户注册登录、保留数据卸载后重新部署及彻底卸载。测试结束删除自己的容器和卷，不操作正式项目。
+该检查使用独立项目与本机 1741/12222 端口，验证无管理员启动、普通用户注册登录、保留数据卸载后重新部署及彻底卸载。测试结束删除自己的容器和卷，不操作正式项目。
 
-## 域名与网络
+## 对接服务器反向代理
 
-- Caddy 根据 `SITE_ADDRESS` 提供 HTTPS 和 API 反向代理；`PUBLIC_ORIGIN` 必须与外部站点完全一致，不带结尾斜杠。
-- HTTP 仅对 localhost 开发场景允许。
-- 只需公网 TCP 80/443 和 Git SSH 2222（可改）；主机管理 SSH 另行管理，数据库和 API 不映射宿主端口。
-- 既有 UDP 7001 不受影响。
-- 参考 [Caddy 请求体限制](https://caddyserver.com/docs/caddyfile/directives/request_body) 与 [反向代理文档](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)。
+在服务器自己的 Caddy 配置中，将博客域名的上游设为 `127.0.0.1:1741`。服务器负责 DNS、HTTPS 证书及公网 80/443 入口，博客配置中不保存域名。若 Caddy 本身运行在独立容器内，需要另外安排容器到宿主机回环服务的可达性；容器自身的 `127.0.0.1` 不指向宿主机。
+
+代理必须保留原始 `Host`，并覆盖客户端传入的 `X-Forwarded-Host` 与 `X-Forwarded-Proto`，分别写入实际公网主机名（含非默认端口）和协议。Caddy 直接作为公网入口时会设置这些转发头。API 严格比较请求 `Origin` 与代理提供的来源；公网身份操作要求 HTTPS，回环地址允许 HTTP。HTTPS 登录和退出响应使用 Secure Cookie，CSRF 校验继续有效。
+
+只允许服务器上可信代理及本机进程访问博客回环端口，不要将其改为公网监听或直接暴露内部 API。多级代理应由服务器自行配置可信上游，不直接信任公网客户端提供的转发头。
+
+从旧版本更新时，部署脚本会通过 `--remove-orphans` 移除同一 Compose 项目中遗留的 Caddy 容器，不影响服务器独立管理的 Caddy。旧证书数据卷不会自动删除。旧 `.env` 中的站点、域名及 HTTP/HTTPS 入口变量会被清理，数据库凭据保留。

@@ -9,8 +9,5 @@ export default defineConfig({
   build: { inlineStylesheets: 'never' },
   vite: {
     build: { assetsInlineLimit: 0 },
-    server: {
-      proxy: { '/api': process.env.API_BASE_URL || 'http://127.0.0.1:3001' },
-    },
   },
 });

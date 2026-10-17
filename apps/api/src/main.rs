@@ -46,8 +46,6 @@ fn internal(error: impl std::fmt::Display) -> ApiError {
 struct App {
     data: PathBuf,
     ssh_config: PathBuf,
-    origin: String,
-    secure: bool,
     registration: bool,
     accounts: Mutex<accounts::Accounts>,
     hash_slots: Arc<Semaphore>,
@@ -55,12 +53,36 @@ struct App {
     indexed: RwLock<Option<String>>,
     views: AtomicU64,
 }
-fn origin(app: &App, headers: &HeaderMap) -> ApiResult<()> {
-    if headers.get("origin").and_then(|h| h.to_str().ok()) != Some(app.origin.as_str()) {
-        return Err(ApiError(StatusCode::FORBIDDEN, "Origin 校验失败".into()));
+// Only the private web service or the local trusted reverse proxy may reach this API.
+fn origin(headers: &HeaderMap) -> ApiResult<bool> {
+    let denied = || ApiError(StatusCode::FORBIDDEN, "Origin 校验失败".into());
+    let single = |name: &str| -> ApiResult<Option<&str>> {
+        if headers.get_all(name).iter().count() > 1 {
+            return Err(denied());
+        }
+        headers
+            .get(name)
+            .map(|v| v.to_str().map_err(|_| denied()))
+            .transpose()
+    };
+    let scheme = single("x-forwarded-proto")?.unwrap_or("http");
+    let host = single("x-forwarded-host")?
+        .or(single("host")?)
+        .ok_or_else(denied)?;
+    let expected = format!("{scheme}://{host}");
+    let parsed: axum::http::Uri = expected.parse().map_err(|_| denied())?;
+    let secure = scheme == "https";
+    if (!secure && !(scheme == "http" && matches!(parsed.host(), Some("localhost" | "127.0.0.1"))))
+        || parsed.authority().is_none_or(|a| a.as_str().contains('@'))
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || single("origin")? != Some(expected.as_str())
+    {
+        return Err(denied());
     }
-    Ok(())
+    Ok(secure)
 }
+
 async fn posts(State(app): State<Arc<App>>) -> Json<Value> {
     let snapshot = app.snapshot.read().await;
     let mut posts: Vec<_> = snapshot
@@ -293,24 +315,6 @@ async fn main() -> Result<()> {
         index::rebuild(&snapshot).await?;
         return Ok(());
     }
-    let origin = std::env::var("PUBLIC_ORIGIN").context("必须设置 PUBLIC_ORIGIN")?;
-    let parsed: axum::http::Uri = origin.parse().context("PUBLIC_ORIGIN 无效")?;
-    let secure = parsed.scheme_str() == Some("https");
-    ensure!(
-        secure
-            || (parsed.scheme_str() == Some("http")
-                && matches!(parsed.host(), Some("localhost" | "127.0.0.1"))),
-        "生产环境必须使用 HTTPS"
-    );
-    ensure!(
-        !origin.ends_with('/')
-            && parsed.path() == "/"
-            && parsed.query().is_none()
-            && parsed
-                .authority()
-                .is_some_and(|a| !a.as_str().contains('@')),
-        "PUBLIC_ORIGIN 必须为不带末尾斜杠的站点 origin"
-    );
     let source = PathBuf::from(
         std::env::var("INGRESS_DIR").unwrap_or_else(|_| "/srv/ingress/authors".into()),
     );
@@ -327,8 +331,6 @@ async fn main() -> Result<()> {
     let app = Arc::new(App {
         data,
         ssh_config,
-        origin,
-        secure,
         registration: std::env::var("ALLOW_REGISTRATION").as_deref() == Ok("true"),
         accounts: Mutex::new(accounts),
         hash_slots: Arc::new(Semaphore::new(2)),

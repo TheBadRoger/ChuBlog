@@ -1,7 +1,7 @@
 ---
 import Base from '../layouts/Base.astro';
 const sshPort = Number(process.env.SSH_PORT || 2222);
-const hostname = new URL(process.env.PUBLIC_ORIGIN || Astro.url.origin).hostname;
+const hostname = Astro.url.hostname;
 const sshConfig = `Host chublog\n    HostName ${hostname}\n    Port ${sshPort}\n    User git\n    IdentityFile ~/.ssh/id_ed25519\n    IdentitiesOnly yes`;
 ---
 <Base title="账户">

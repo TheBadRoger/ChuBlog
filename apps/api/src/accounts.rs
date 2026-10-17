@@ -184,7 +184,7 @@ pub async fn authorize(
         return Err(ApiError(StatusCode::FORBIDDEN, "需要管理员权限".into()));
     }
     if change {
-        origin(app, headers)?;
+        origin(headers)?;
         if headers.get("x-csrf-token").and_then(|v| v.to_str().ok()) != Some(session.csrf.as_str())
         {
             return Err(ApiError(StatusCode::FORBIDDEN, "CSRF 校验失败".into()));
@@ -221,7 +221,7 @@ pub async fn register(
     headers: HeaderMap,
     Json(input): Json<Login>,
 ) -> ApiResult<Json<Value>> {
-    origin(&app, &headers)?;
+    origin(&headers)?;
     if !app.registration {
         return Err(ApiError(StatusCode::FORBIDDEN, "注册已关闭".into()));
     }
@@ -286,7 +286,7 @@ pub async fn login(
     headers: HeaderMap,
     Json(input): Json<Login>,
 ) -> ApiResult<Response> {
-    origin(&app, &headers)?;
+    let secure = origin(&headers)?;
     username(&input.username).map_err(bad)?;
     password(&input.password).map_err(bad)?;
     let hash = {
@@ -344,7 +344,7 @@ pub async fn login(
     );
     let cookie = format!(
         "chublog_session={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600{}",
-        if app.secure { "; Secure" } else { "" }
+        if secure { "; Secure" } else { "" }
     );
     let mut response = Json(json!({"csrf": csrf, "username": input.username, "role": accounts.grants.publishers[&input.username].role})).into_response();
     response.headers_mut().insert(
@@ -367,6 +367,7 @@ pub async fn me(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Js
     ))
 }
 pub async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Response> {
+    let secure = origin(&headers)?;
     let name = authorize(&app, &headers, true, false).await?;
     app.accounts
         .lock()
@@ -378,7 +379,7 @@ pub async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResul
         header::SET_COOKIE,
         HeaderValue::from_str(&format!(
             "chublog_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{}",
-            if app.secure { "; Secure" } else { "" }
+            if secure { "; Secure" } else { "" }
         ))
         .map_err(internal)?,
     );
