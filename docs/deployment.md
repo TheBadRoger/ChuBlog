@@ -2,14 +2,45 @@
 
 [返回项目首页](../README.md)
 
-## 构建与启动
+## 一键部署
 
-- 构建与运行镜像基于 Debian 13；宿主机只需满足 Docker 运行要求。
-- `scripts/deploy.sh` 会使用同一个依赖初始化脚本，自动按[依赖源顺序](development.md)进行 HTTPS 回退，再构建外部数据库与 Docker 镜像；沿用运行者现有的 Git 配置，不在项目内覆盖服务器环境。
+在项目根目录执行，将示例域名替换为自己的域名，并事先配置 DNS：
 
 ```sh
-scripts/deploy.sh
+scripts/deploy.sh --site https://blog.example.com
 ```
+
+脚本依次生成配置、获取固定版本的外部依赖、在 Docker 内构建镜像、启动并初始化数据库，最后启动博客并等待服务就绪。不需要另行执行 `hash-password`、`db-init` 或 `docker compose up`。
+
+首次运行自动创建权限为 `600` 的 `.env`，生成两份不同的随机数据库口令。重复部署保留已有口令和数据；需要备份 `.env` 及持久卷。不传 `--site` 时首次默认使用 `http://localhost`，已有配置则继续沿用。
+
+部署不创建博客管理员，也不要求填写管理员密码。首页继续显示施工说明和导航；文章阅读、注册登录、账户设置及 SSH 服务照常启动。新注册用户均为 `reader`，第一个用户也不会自动提权。已有账户与发布授权保持有效；空站点的发布授权仍需后续确定的管理员管理流程，注册本身不授予发布权。
+
+## 更新与卸载
+
+更新前先提交或自行保存工作区修改，然后执行：
+
+```sh
+scripts/update.sh
+```
+
+脚本拒绝覆盖有未提交修改的工作区，以 `git pull --ff-only` 更新当前分支，再重新获取依赖、构建、初始化数据库并启动服务。保留 `.env`、账户、文章和数据库持久卷。构建失败会退出，不先停止已有服务；启动失败时检查日志，脚本不提供自动版本回滚。
+
+卸载当前项目的容器、网络和本地构建镜像，保留数据卷：
+
+```sh
+scripts/uninstall.sh
+```
+
+**永久删除文章、账户、数据库、授权和 SSH 主机密钥等项目持久数据**时，使用：
+
+```sh
+scripts/uninstall.sh --purge
+```
+
+卸载保留项目源码、`.env`、共享基础镜像和 Docker 构建缓存，不执行全局 prune。保留数据卷时，重新运行部署脚本即可恢复。删除数据卷后恢复只能依靠备份。
+
+三个脚本均支持 `--env-file PATH`、`--project-name NAME` 和 `--sources-env-file PATH`；同一套部署的更新与卸载必须沿用相同配置路径和项目名。下载源覆盖文件只接受镜像及软件包来源，不能覆盖数据库口令。
 
 ## 宿主机要求
 
@@ -46,40 +77,20 @@ Rust 工具链直接来自 Rust 镜像；GHC 9.10.3 和 Stack 来自匹配 ChuSQ
 
 ### 使用外网源验证
 
-项目提供不含密码的 `deploy/sources.public.env`，使用公开 ECR Docker Library 镜像、USTC Debian 源、官方 npm 源及 RsProxy Cargo 源。外网构建与隔离联调时运行：
+项目提供不含密码的 `deploy/sources.public.env`，使用公开 ECR Docker Library 镜像、USTC Debian 源、官方 npm 源及 RsProxy Cargo 源。外网部署与隔离联调时运行：
 
 ```sh
-python3 scripts/prepare-deploy.py --sources-env-file deploy/sources.public.env
+scripts/deploy.sh --site https://blog.example.com \
+  --sources-env-file deploy/sources.public.env
 python3 scripts/smoke.py --key-type rsa \
   --sources-env-file deploy/sources.public.env
 ```
 
 第二份配置只覆盖下载来源，不改写 `.env` 的域名、口令等生产设置。Docker Compose 会优先使用当前 shell 中已导出的同名环境变量；切换测试配置前须检查这些覆盖。公网源连通性不能证明腾讯云内网镜像可用，内网源仍需在腾讯云服务器验证。
 
-## 首次部署
-
-在项目根目录执行。先按[开发与依赖](development.md)初始化子模块，再准备配置和构建镜像：
-
-```sh
-cp .env.example .env
-chmod 600 .env
-# 编辑 .env，配置域名、镜像前缀及两份不同的随机 DB 口令。
-python3 scripts/prepare-deploy.py
-# 在临时容器内生成管理员密码哈希；不启动其他服务。
-# 输入口令后按 Ctrl-D 结束，不要把明文写进命令行历史。
-docker compose --env-file .env -f deploy/compose.yaml \
-  run --rm --no-deps -T api hash-password
-# 将输出以单引号包裹写入 .env 的 ADMIN_PASSWORD_HASH。
-docker compose --env-file .env -f deploy/compose.yaml up -d --no-build
-# db 启动就绪后，创建 chublog 库和非超级用户 chublog_index；失败时检查日志后重试。
-docker compose --env-file .env -f deploy/compose.yaml run --rm db-init
-```
-
-后续部署可运行 `scripts/deploy.sh`，自动初始化依赖、在 Docker 内构建并启动服务。
-
-部署入口启动服务后，首次仍需执行上面的 `db-init` 命令；入口不会在数据库启动竞态中静默吞掉初始化错误。
-
 ## 构建选项与平台
+
+服务器部署固定只构建生产目标，无需额外参数：Rust 只构建 `chublog-api` 可执行文件与 ChuSQL 存储库，Haskell 只构建服务端和 bootstrap，并显式禁用测试与基准目标。前端只执行类型检查与生产构建，不调用测试命令。`deploy.sh` 与 `prepare-deploy.py` 不会自动运行联调脚本；开发测试仍可独立执行。
 
 需要切换默认腾讯云内网 Debian 包源时，可在 `.env` 配置 `DEBIAN_MIRROR=mirrors.ustc.edu.cn`，仍使用 Debian 签名校验。
 
@@ -87,15 +98,30 @@ docker compose --env-file .env -f deploy/compose.yaml run --rm db-init
 - `--build-database` 保留为兼容参数；数据库始终在 Docker 中构建。旧的 `--no-build` 和 `--chusql-source` 不再支持。
 - `--sources-env-file PATH` 可追加只含下载源配置的 Compose 环境文件；优先级高于第一份环境文件。
 - `--env-file PATH` 可选择配置文件；默认读取项目 `.env`，不存在时读取 `.env.example`（仅用于构建，不用于生产启动）。
-- 外部依赖仍由宿主机 `init-deps.py` 初始化，沿用现有 Git 配置；构建过程不将 SSH 私钥或 Git 凭据复制到镜像。
+- 外部依赖仍由宿主机 `fetch-deps.py` 初始化，沿用现有 Git 配置；构建过程不将 SSH 私钥或 Git 凭据复制到镜像。
 - GHC 工具链镜像支持 amd64、arm64；更新 ChuSQL resolver 时，须同步核对 GHC 镜像版本与 Dockerfile 中的复制路径。
 - 镜像默认按 Docker 主机架构构建，不复用宿主机已有二进制；构建与运行阶段均使用 Debian 13 系列镜像。
 - Cargo、Stack 软件包缓存保存在 Docker BuildKit 中。镜像前缀控制编译器镜像来源，Cargo 与 Haskell 包下载独立于镜像注册表。
 - 运行镜像不含编译器、源码、`.env` 或密码文件。
 
-## 管理员初始化
+## 验证部署
 
-浏览器打开配置的站点即可看到前端。`SITE_TITLE` 控制页眉名称。首次启动从环境中的哈希创建管理员，后续账号与权限以持久文件为准，修改初始哈希不会覆盖已有账户。
+浏览器打开配置的站点，确认首页居中显示施工说明，且可以进入文章列表与账户页面。`SITE_TITLE` 控制页眉名称。检查服务状态与日志：
+
+```sh
+docker compose --env-file .env -f deploy/compose.yaml ps
+docker compose --env-file .env -f deploy/compose.yaml logs --tail 100 api db
+```
+
+`api`、`web`、`ssh`、`db` 和 `caddy` 应运行，`init` 成功退出。`db-init` 是一次性初始化任务。部署脚本对数据库初始化设有重试和超时，失败时退出，不会报告部署完成。
+
+用于开发环境的隔离部署回归检查：
+
+```sh
+python3 scripts/smoke-deployment.py --sources-env-file deploy/sources.public.env
+```
+
+该检查使用独立项目与本机 18080/18443/12222 端口，验证无管理员启动、普通用户注册登录、保留数据卸载后重新部署及彻底卸载。测试结束删除自己的容器和卷，不操作正式项目。
 
 ## 域名与网络
 

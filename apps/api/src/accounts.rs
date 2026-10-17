@@ -120,55 +120,15 @@ pub async fn load(
         },
         Err(error) => return Err(error.into()),
     };
-    let mut accounts = Accounts {
+    Ok(Accounts {
         credentials,
         grants,
         sessions: BTreeMap::new(),
         attempts: VecDeque::new(),
         changes: VecDeque::new(),
-    };
-    if accounts.credentials.is_empty() {
-        let name = std::env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".into());
-        username(&name)?;
-        let hash =
-            std::env::var("ADMIN_PASSWORD_HASH").context("首次启动必须设置 ADMIN_PASSWORD_HASH")?;
-        let parsed = PasswordHash::new(&hash).map_err(|_| anyhow::anyhow!("管理员哈希格式无效"))?;
-        ensure!(
-            parsed.algorithm.as_str() == "argon2id",
-            "管理员哈希必须为 Argon2id"
-        );
-        accounts
-            .credentials
-            .insert(name.clone(), Credential { hash });
-        accounts.grants.publishers.insert(
-            name,
-            Grant {
-                enabled: true,
-                role: Role::Admin,
-                prefixes: vec![],
-                ssh_key: None,
-            },
-        );
-        atomic(config, &serde_json::to_vec_pretty(&accounts.grants)?, 0o644).await?;
-        atomic(
-            &data.join("users.json"),
-            &serde_json::to_vec(&accounts.credentials)?,
-            0o600,
-        )
-        .await?;
-    }
-    ensure!(
-        accounts
-            .grants
-            .publishers
-            .iter()
-            .any(|(name, g)| g.role == Role::Admin
-                && g.enabled
-                && accounts.credentials.contains_key(name)),
-        "至少需要一个启用的管理员"
-    );
-    Ok(accounts)
+    })
 }
+
 fn rate(accounts: &mut Accounts) -> ApiResult<()> {
     let now = Instant::now();
     while accounts

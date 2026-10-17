@@ -602,6 +602,66 @@ async fn request(
     )
 }
 #[tokio::test]
+async fn empty_accounts_start_and_first_user_remains_reader_after_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = app(dir.path()).await;
+    tokio::fs::remove_file(dir.path().join("users.json"))
+        .await
+        .unwrap();
+    tokio::fs::remove_file(&app.ssh_config).await.unwrap();
+    *app.accounts.lock().await =
+        accounts::load(dir.path(), &app.ssh_config, dir.path().join("ingress.git"))
+            .await
+            .unwrap();
+    assert!(app.accounts.lock().await.grants.publishers.is_empty());
+    let (status, _, value) = request(
+        app.clone(),
+        "POST",
+        "/api/auth/register",
+        json!({"username":"first", "password":"First-user-password-123"}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["role"], "reader");
+    *app.accounts.lock().await =
+        accounts::load(dir.path(), &app.ssh_config, dir.path().join("ingress.git"))
+            .await
+            .unwrap();
+    let (status, headers, value) = request(
+        app.clone(),
+        "POST",
+        "/api/auth/login",
+        json!({"username":"first", "password":"First-user-password-123"}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(app.accounts.lock().await.grants.publishers.len(), 1);
+    assert_eq!(
+        app.accounts.lock().await.grants.publishers["first"].role,
+        Role::Reader
+    );
+    let cookie = headers[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    let (status, _, _) = request(
+        app,
+        "GET",
+        "/api/admin/users",
+        json!(null),
+        Some(cookie),
+        value["csrf"].as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+#[tokio::test]
 async fn registration_login_grants_revocation_and_private_content_boundaries() {
     let dir = tempfile::tempdir().unwrap();
     let app = app(dir.path()).await;

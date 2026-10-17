@@ -20,7 +20,7 @@ COPY apps/api ./apps/api
 COPY external/ChuSQL-RustDriver ./external/ChuSQL-RustDriver
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --locked --release && mkdir /out && cp target/release/chublog-api /out/
+    cargo build --locked --release --package chublog-api --bin chublog-api && mkdir /out && cp target/release/chublog-api /out/
 
 FROM rust-toolchain AS database-build
 ARG DEBIAN_MIRROR=mirrors.tencentyun.com
@@ -35,13 +35,13 @@ ENV PATH=/opt/ghc/9.10.3/bin:$PATH
 WORKDIR /src/ChuSQL
 COPY external/ChuSQL ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo build --manifest-path chusql-core/storage/Cargo.toml --locked --release
+    cargo build --manifest-path chusql-core/storage/Cargo.toml --locked --release --lib
 ENV LD_LIBRARY_PATH=/src/ChuSQL/chusql-core/storage/target/release
 RUN --mount=type=cache,target=/root/.stack \
     mkdir /out && cd chusql-server \
-    && stack --system-ghc --no-install-ghc --no-terminal --jobs 2 build --fast --copy-bins --local-bin-path /out \
+    && stack --system-ghc --no-install-ghc --no-terminal --jobs 2 build chusql-server:exe:chusql-server --no-test --no-bench --fast --copy-bins --local-bin-path /out \
     && cd ../chusql-bootstrap \
-    && stack --system-ghc --no-install-ghc --no-terminal --jobs 2 build --fast --copy-bins --local-bin-path /out \
+    && stack --system-ghc --no-install-ghc --no-terminal --jobs 2 build chusql-bootstrap:exe:csql-bootstrap --no-test --no-bench --fast --copy-bins --local-bin-path /out \
     && cp ../chusql-core/storage/target/release/libchusql_core_storage.so /out/
 
 FROM ${DEBIAN_IMAGE} AS base

@@ -4,6 +4,14 @@ Rust/Axum 博客后端。作者在独立 Git 仓库中编辑文本或 Markdown�
 
 提供 Rust/Axum 后端和 Astro + TypeScript 简单前端。首页为居中的施工说明与导航，支持文章阅读、注册登录和账户设置；文章继续通过 Git 发布。
 
+在项目根目录一键部署（默认腾讯云内网源）：
+
+```sh
+scripts/deploy.sh --site https://blog.example.com
+```
+
+宿主机只需 Docker Compose、Python 3 和 Git。脚本自动完成依赖获取、容器内编译、数据库初始化和启动，不创建初始管理员。更新使用 `scripts/update.sh`，卸载使用 `scripts/uninstall.sh`，详细配置见[部署文档](docs/deployment.md)。
+
 ## 文档
 
 | 文档 | 内容 |
@@ -15,7 +23,6 @@ Rust/Axum 博客后端。作者在独立 Git 仓库中编辑文本或 Markdown�
 | [API](docs/API.md) | HTTP 接口、认证、请求与错误响应 |
 | [内容与隔离](docs/security.md) | 文件白名单、容量限制、SSH 与进程边界 |
 | [运维与迁移](docs/operations.md) | 持久化、备份恢复、旧共享仓库迁移 |
-| [架构决策](docs/decisions/README.md) | 已记录的设计选择及演进 |
 
 源码：[GitHub](https://github.com/TheBadRoger/ChuBlog.git) · [自建仓库](https://repo.chunana.cn/ChuNa7a/ChuBlog.git)
 

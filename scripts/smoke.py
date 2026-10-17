@@ -67,9 +67,8 @@ class Client:
 with tempfile.TemporaryDirectory(prefix='chublog-smoke-') as temporary:
     tmp = Path(temporary)
     password = secrets.token_urlsafe(24)
-    hashed = 'temporary-build-placeholder'
     envfile = tmp / '.env'
-    envfile.write_text(f"PUBLIC_ORIGIN={ORIGIN}\nSITE_ADDRESS=http://localhost:80\nADMIN_PASSWORD_HASH='{hashed}'\n"
+    envfile.write_text(f"PUBLIC_ORIGIN={ORIGIN}\nSITE_ADDRESS=http://localhost:80\n"
                        f"CHUSQL_ROOT_PASSWORD={secrets.token_urlsafe(24)}\nCHUSQL_PASSWORD={secrets.token_urlsafe(24)}\n"
                        f"REGISTRY_PREFIX={os.environ.get('REGISTRY_PREFIX', '')}\n"
                        'DEBIAN_MIRROR=mirrors.ustc.edu.cn\nALLOW_REGISTRATION=true\nHTTP_BIND=127.0.0.1\nHTTP_PORT=18080\nHTTPS_PORT=18443\nSSH_BIND=127.0.0.1\nSSH_PORT=12222\n')
@@ -105,7 +104,16 @@ printf '%s\n' "$reply"
         hashed = run(compose + ['run', '--rm', '--no-deps', '-T', 'api', 'hash-password'],
                      input=password, capture_output=True).stdout.strip()
         assert hashed.startswith('$argon2id$'), 'Container did not produce an Argon2id hash'
-        envfile.write_text(envfile.read_text().replace('temporary-build-placeholder', hashed))
+        # Isolated development fixture; production deployment never creates an administrator.
+        run(compose + ['run', '--rm', '--no-deps', '-T', 'init'])
+        for path, data, mode in [
+            ('/data/users.json', {'admin': {'hash': hashed}}, '600'),
+            ('/auth/publishers.json', {'repository': '/srv/ingress/authors', 'publishers': {
+                'admin': {'enabled': True, 'role': 'admin', 'prefixes': [], 'ssh_key': None}}}, '644'),
+        ]:
+            run(compose + ['run', '--rm', '--no-deps', '-T', '--entrypoint', 'sh', 'api', '-c',
+                           f'umask 077; cat > {path} && chmod {mode} {path}'],
+                input=json.dumps(data), capture_output=True)
         run(compose + ['up', '-d', '--no-build'])
         admin = Client()
         wait_for(lambda: admin.call('GET', '/api/health'))

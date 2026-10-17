@@ -8,7 +8,7 @@ ChuBlog/
 ├── external/
 │   ├── ChuSQL/             # Git 子模块，主仓库只记录版本指针
 │   └── ChuSQL-RustDriver/  # Git 子模块
-└── scripts/init-deps.py
+└── scripts/fetch-deps.py
 ```
 
 ## 获取代码
@@ -19,7 +19,7 @@ ChuBlog/
 git clone https://github.com/TheBadRoger/ChuBlog.git
 # 或：git clone https://repo.chunana.cn/ChuNa7a/ChuBlog.git
 cd ChuBlog
-python3 scripts/init-deps.py
+python3 scripts/fetch-deps.py
 ```
 
 ## 依赖来源与回退
@@ -40,7 +40,7 @@ python3 scripts/init-deps.py
 开发电脑仍可显式选择已有本地来源（仅开发覆盖参数，不是服务器默认流程）；只读取已提交版本：
 
 ```sh
-python3 scripts/init-deps.py --database-repo ../ChuSQL --driver-repo ../ChuSQLDriver
+python3 scripts/fetch-deps.py --database-repo ../ChuSQL --driver-repo ../ChuSQLDriver
 ```
 
 - 子模块固定到已提交版本；源仓库必须包含这些提交。
@@ -63,6 +63,8 @@ cargo clippy --all-targets -- -D warnings
 
 ```sh
 python3 scripts/test-prepare-deploy.py
+python3 scripts/test-fetch-deps.py
+python3 scripts/test-deployment.py
 ```
 
 ```sh
@@ -77,6 +79,7 @@ python3 scripts/smoke.py --key-type rsa --browser-test \
 
 - 联调使用独立随机命名的 Compose 项目、本机 18080/18443/12222 端口，测试结束清理自己创建的容器与卷。
 - 覆盖真实 SSH 身份与授权、作者间 Git 对象隔离、非法推送、TOML 暂存与修复、多页链接、系统时间、索引删除、ChuSQL 元信息创建/删除、发布撤回、断库阅读、重启与撤权。
+- 管理员仅由隔离测试脚本写入测试卷作为夹具，生产部署没有管理员环境变量或自动建号步骤。
 - 该测试会拉取基础镜像，需要 Docker 可用。
 
 ## 历史清理后的协作
