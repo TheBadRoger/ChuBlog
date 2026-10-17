@@ -31,13 +31,11 @@ services:
       init: { condition: service_completed_successfully }
     environment:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN}
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?Set ADMIN_PASSWORD_HASH}
-      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
       CHUSQL_ADDRESS: db:7777
       CHUSQL_USER: chublog_index
       CHUSQL_PASSWORD: ${CHUSQL_PASSWORD:?Set CHUSQL_PASSWORD}
       CHUSQL_DATABASE: chublog
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
     volumes:
       - content:/data
       - authorization:/auth

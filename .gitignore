@@ -10,3 +10,4 @@ dist/
 __pycache__/
 *.pyc
 external
+/docs/decisions/
