@@ -102,6 +102,8 @@ def deploy(args):
              '--env-file', str(args.env_file), '--project-name', args.project_name]
     if args.sources_env_file:
         build.extend(['--sources-env-file', str(args.sources_env_file.resolve())])
+    if args.with_cli:
+        build.append('--with-cli')
     run(build)
     compose = compose_command(args, args.env_file)
     print('启动数据库并初始化博客数据库与专用账号…', flush=True)
@@ -126,7 +128,7 @@ def deploy(args):
     print('启动博客与 HTTPS Git 接收服务…', flush=True)
     run(compose + ['up', '-d', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', '90'])
     port = os.environ.get('WEB_PORT', read_config(args.env_file).get('WEB_PORT', '1741'))
-    print(f'部署完成：http://127.0.0.1:{port}\n不创建初始管理员；注册账户默认为普通用户。', flush=True)
+    print(f'部署完成：http://127.0.0.1:{port}\n首次访问 /setup 完成安装并创建唯一站长；普通注册不授予站长权限。\n安装密钥：使用相同 Compose 参数执行 exec api cat /data/setup-token 获取。', flush=True)
 
 
 def update(args):
@@ -138,6 +140,8 @@ def update(args):
                '--env-file', str(args.env_file), '--project-name', args.project_name]
     if args.sources_env_file:
         command.extend(['--sources-env-file', str(args.sources_env_file.resolve())])
+    if args.with_cli:
+        command.append('--with-cli')
     os.execv(sys.executable, command)
 
 
@@ -164,9 +168,12 @@ def main():
     parser.add_argument('--sources-env-file', type=Path, help='optional public/build source overrides')
     parser.add_argument('--project-name', default='chublog', help='Compose project name (default: chublog)')
     parser.add_argument('--purge', action='store_true', help='uninstall only: permanently delete project volumes')
+    parser.add_argument('--with-cli', action='store_true', help='deploy/update: build and install the ChuSQL CLI in the database image')
     args = parser.parse_args()
     if args.purge and args.action != 'uninstall':
         parser.error('--purge 只能用于卸载。')
+    if args.with_cli and args.action == 'uninstall':
+        parser.error('--with-cli 只能用于部署或更新。')
     if args.sources_env_file and not args.sources_env_file.is_file():
         parser.error('下载源配置文件不存在。')
     if args.sources_env_file:

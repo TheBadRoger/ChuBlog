@@ -1,12 +1,10 @@
 use crate::{
     accounts::{Grant, Role},
-    database::{self, Database},
-    git_store,
+    database::Database,
 };
 use anyhow::Context;
 use chusql_driver::{Client, Query, QueryResult, Value};
-use serde::Deserialize;
-use std::{collections::BTreeMap, future::Future, path::Path};
+use std::future::Future;
 
 #[derive(Debug)]
 pub enum Error {
@@ -16,6 +14,7 @@ pub enum Error {
     Denied,
     Quota,
 }
+
 impl From<anyhow::Error> for Error {
     fn from(error: anyhow::Error) -> Self {
         Self::Database(error)
@@ -43,14 +42,21 @@ impl std::error::Error for Error {
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(i64)]
 pub enum Level {
-    Banned = 0,
-    Member = 1,
-    Author = 2,
-    Master = 3,
+    Banned,
+    Member,
+    Author,
+    Master,
 }
 impl Level {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Banned => "BANNED",
+            Self::Member => "MEMBER",
+            Self::Author => "AUTHOR",
+            Self::Master => "MASTER",
+        }
+    }
     pub fn from_grant(enabled: bool, role: Role) -> Self {
         if !enabled {
             Self::Banned
@@ -70,8 +76,6 @@ impl Level {
                 Self::Author => Role::Publisher,
                 Self::Master => Role::Admin,
             },
-            prefixes: vec![],
-            _legacy_ssh_key: None,
         }
     }
 }
@@ -93,7 +97,7 @@ impl User {
     }
     pub fn view(&self) -> Value {
         serde_json::json!({"id":self.id,"username":self.username,"created_at":self.created_at,
-            "last_login_at":self.last_login_at,"permission_level":self.level as i64})
+            "last_login_at":self.last_login_at,"permission_level":self.level.as_str()})
     }
 }
 #[derive(Clone)]
@@ -101,7 +105,6 @@ pub struct Store {
     pub database: Database,
 }
 const COLUMNS: &str = "id, username, password_hash, created_at, last_login_at, permission_level";
-const IMPORT: &str = "legacy_json_v1";
 fn require(condition: bool, message: &'static str) -> anyhow::Result<()> {
     if !condition {
         anyhow::bail!(message);
@@ -109,7 +112,7 @@ fn require(condition: bool, message: &'static str) -> anyhow::Result<()> {
     Ok(())
 }
 fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 async fn sql(db: &Client, query: &str) -> Result<QueryResult> {
     db.query(query)
@@ -136,21 +139,17 @@ fn decode(row: &[Value]) -> anyhow::Result<User> {
         parsed.algorithm.as_str() == "argon2id",
         "密码必须使用 Argon2id 哈希",
     )?;
-    let created_at = text(3)?;
-    chrono::DateTime::parse_from_rfc3339(&created_at)?;
+    let created_at = crate::database::from_timestamp(&text(3)?)?;
     let last_login_at = if row[4].is_null() {
         None
     } else {
-        Some(text(4)?)
+        Some(crate::database::from_timestamp(&text(4)?)?)
     };
-    if let Some(time) = &last_login_at {
-        chrono::DateTime::parse_from_rfc3339(time)?;
-    }
-    let level = match row[5].as_i64() {
-        Some(0) => Level::Banned,
-        Some(1) => Level::Member,
-        Some(2) => Level::Author,
-        Some(3) => Level::Master,
+    let level = match row[5].as_str() {
+        Some("BANNED") => Level::Banned,
+        Some("MEMBER") => Level::Member,
+        Some("AUTHOR") => Level::Author,
+        Some("MASTER") => Level::Master,
         _ => anyhow::bail!("未知账户权限等级，拒绝授权"),
     };
     Ok(User {
@@ -245,15 +244,94 @@ impl Store {
             })
             .collect()
     }
+    pub async fn site(&self) -> Result<Option<crate::setup::Site>> {
+        let db = self.database.connect().await?;
+        let result = sql(&db, "SELECT name, description FROM blog_site WHERE id = 1").await?;
+        db.close().await;
+        require(
+            !result.truncated && result.rows.len() <= 1,
+            "网站配置记录无效",
+        )?;
+        result
+            .rows
+            .first()
+            .map(|row| {
+                Ok(crate::setup::Site {
+                    name: row
+                        .first()
+                        .and_then(Value::as_str)
+                        .context("网站名称无效")?
+                        .into(),
+                    description: row
+                        .get(1)
+                        .and_then(Value::as_str)
+                        .context("网站简介无效")?
+                        .into(),
+                })
+            })
+            .transpose()
+    }
+    pub async fn owner(&self) -> Result<Option<User>> {
+        let db = self.database.connect().await?;
+        let result = sql(&db, &format!("SELECT {COLUMNS} FROM blog_users WHERE id IN (SELECT master_user_id FROM blog_site WHERE id = 1)")).await?;
+        db.close().await;
+        require(
+            !result.truncated && result.rows.len() <= 1,
+            "站长账户记录无效",
+        )?;
+        let user = result.rows.first().map(|row| decode(row)).transpose()?;
+        if let Some(user) = &user {
+            require(user.level == Level::Master, "站长权限无效")?;
+        }
+        Ok(user)
+    }
+    pub async fn starters_pending(&self) -> Result<bool> {
+        let db = self.database.connect().await?;
+        let result = sql(&db, "SELECT starter_commit FROM blog_site WHERE id = 1").await?;
+        db.close().await;
+        Ok(result
+            .rows
+            .first()
+            .is_some_and(|row| row.first().is_some_and(Value::is_null)))
+    }
+    pub async fn mark_starters(&self, owner: &User, commit: &str) -> Result<()> {
+        let db = self.database.connect().await?;
+        let query = Query::new("UPDATE blog_site SET starter_commit = ")
+            .bind(commit)
+            .push(" WHERE id = 1 AND master_user_id = ")
+            .bind(owner.id)
+            .push(" AND starter_commit IS NULL");
+        sql(&db, query.as_str()).await?;
+        db.close().await;
+        Ok(())
+    }
+    pub async fn install(&self, site: &crate::setup::Site, name: &str, hash: &str) -> Result<()> {
+        self.transaction(|db| async move {
+            let installed = sql(&db, "SELECT id FROM blog_site WHERE id = 1").await?;
+            if !installed.rows.is_empty() { return Err(Error::Conflict); }
+            let count = sql(&db, "SELECT count(*) FROM blog_users").await?;
+            require(count.rows.first().and_then(|row| row.first()).and_then(Value::as_u64) == Some(0), "安装要求空账户表")?;
+            let query = Query::new("INSERT INTO blog_users (username, password_hash, created_at, permission_level) VALUES (")
+                .bind(name).push(", ").bind(hash).push(", ").bind(now().as_str()).push(", 'MASTER')");
+            sql(&db, query.as_str()).await?;
+            let master = get(&db, name).await?.ok_or(Error::NotFound)?;
+            let query = Query::new("INSERT INTO blog_site (id, name, description, master_user_id, installed_at) VALUES (1, ")
+                .bind(site.name.as_str()).push(", ").bind(site.description.as_str()).push(", ").bind(master.id)
+                .push(", ").bind(now().as_str()).push(")");
+            sql(&db, query.as_str()).await?;
+            Ok(())
+        }).await
+    }
     pub async fn register(&self, name: &str, hash: &str) -> Result<User> {
         self.transaction(|db| async move {
+            if sql(&db, "SELECT id FROM blog_site WHERE id = 1").await?.rows.is_empty() { return Err(Error::Denied); }
             if get(&db, name).await?.is_some() { return Err(Error::Conflict); }
             let count = sql(&db, "SELECT count(*) FROM blog_users").await?;
             let count = count.rows.first().and_then(|row| row.first()).and_then(Value::as_u64)
                 .context("用户数量查询无效")?;
             if count >= 1000 { return Err(Error::Quota); }
             let query = Query::new("INSERT INTO blog_users (username, password_hash, created_at, last_login_at, permission_level) VALUES (")
-                .bind(name).push(", ").bind(hash).push(", ").bind(now().as_str()).push(", NULL, 1)");
+                .bind(name).push(", ").bind(hash).push(", ").bind(now().as_str()).push(", NULL, ").bind(Level::Member.as_str()).push(")");
             sql(&db, query.as_str()).await?;
             get(&db, name).await?.ok_or(Error::NotFound)
         }).await
@@ -296,12 +374,13 @@ impl Store {
             if !actor.same_revision(expected_actor)
                 || actor.level != Level::Master
                 || (actor.username == name && level != Level::Master)
+                || (actor.username != name && level == Level::Master)
             {
                 return Err(Error::Denied);
             }
             let target = get(&db, name).await?.ok_or(Error::NotFound)?;
             let query = Query::new("UPDATE blog_users SET permission_level = ")
-                .bind(level as i64)
+                .bind(level.as_str())
                 .push(" WHERE id = ")
                 .bind(target.id);
             sql(&db, query.as_str()).await?;
@@ -309,85 +388,48 @@ impl Store {
         })
         .await
     }
+}
 
-    pub async fn initialize(
-        &self,
-        data: &Path,
-        config: &Path,
-        repository: &Path,
-    ) -> anyhow::Result<()> {
-        let marker = data.join("accounts-chusql-v1");
-        if let Ok(value) = tokio::fs::read_to_string(&marker).await {
-            require(
-                value.trim() == self.database.name,
-                "账户数据库名称与迁移标记不一致，拒绝自动切换",
-            )?;
-            return Ok(()); // Never recreate lost identity tables or fall back to JSON on restart.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argon2::PasswordHasher;
+
+    #[test]
+    fn permission_labels_decode_without_integer_or_unknown_fallback() {
+        let salt = argon2::password_hash::SaltString::encode_b64(b"account-test-salt").unwrap();
+        let hash = argon2::Argon2::default()
+            .hash_password(b"Test-password-123", &salt)
+            .unwrap()
+            .to_string();
+        let mut row = vec![
+            Value::from(1),
+            Value::from("alice"),
+            Value::from(hash),
+            Value::from("2026-01-01 00:00:00"),
+            Value::Null,
+            Value::Null,
+        ];
+        for level in [Level::Banned, Level::Member, Level::Author, Level::Master] {
+            row[5] = Value::from(level.as_str());
+            let user = decode(&row).unwrap();
+            assert_eq!(user.level, level);
+            assert_eq!(user.view()["permission_level"], level.as_str());
+            assert!(user.view().get("password_hash").is_none());
+            assert_eq!(
+                Level::from_grant(level.grant().enabled, level.grant().role),
+                level
+            );
         }
-        let db = self.database.connect().await?;
-        database::ensure_tables(&db, database::ACCOUNTS_SQL).await?;
-        db.close().await;
-        #[derive(Deserialize)]
-        struct Credential {
-            hash: String,
+        for invalid in [
+            Value::from(0),
+            Value::from(3),
+            Value::from("member"),
+            Value::from("UNKNOWN"),
+            Value::Null,
+        ] {
+            row[5] = invalid;
+            assert!(decode(&row).is_err());
         }
-        let legacy: BTreeMap<String, Credential> =
-            match tokio::fs::read(data.join("users.json")).await {
-                Ok(bytes) => {
-                    require(bytes.len() <= 1024 * 1024, "旧账户文件过大")?;
-                    serde_json::from_slice(&bytes)?
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-                Err(error) => return Err(error.into()),
-            };
-        require(legacy.len() <= 1000, "旧账户超过配额")?;
-        let grants: Option<git_store::Config> = match tokio::fs::read(config).await {
-            Ok(bytes) => {
-                require(bytes.len() <= 256 * 1024, "旧授权文件过大")?;
-                Some(serde_json::from_slice(&bytes)?)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
-        if let Some(grants) = &grants {
-            require(
-                grants.repository == repository,
-                "旧授权配置的接收目录不匹配",
-            )?;
-        }
-        self.transaction(|db| async move {
-            let done = sql(&db, "SELECT name FROM blog_account_migrations WHERE name = 'legacy_json_v1'").await?;
-            if !done.rows.is_empty() { return Ok(()); }
-            let imported_at = now();
-            for (name, credential) in &legacy {
-                crate::accounts::username(name)?;
-                let parsed = argon2::PasswordHash::new(&credential.hash).map_err(|_| anyhow::anyhow!("旧密码哈希无效"))?;
-                require(parsed.algorithm.as_str() == "argon2id", "旧密码必须使用 Argon2id 哈希")?;
-                let grant = grants.as_ref().and_then(|cfg| cfg.publishers.get(name));
-                let level = grant.map(|grant| Level::from_grant(grant.enabled, grant.role)).unwrap_or(Level::Banned);
-                if let Some(existing) = get(&db, name).await? {
-                    require(existing.hash == credential.hash && existing.level == level, "旧账户与数据库记录冲突，拒绝覆盖")?;
-                    continue;
-                }
-                let query = Query::new("INSERT INTO blog_users (username, password_hash, created_at, last_login_at, permission_level) VALUES (")
-                    .bind(name.as_str()).push(", ").bind(credential.hash.as_str()).push(", ").bind(imported_at.as_str())
-                    .push(", NULL, ").bind(level as i64).push(")");
-                sql(&db, query.as_str()).await?;
-            }
-            let query = Query::new("INSERT INTO blog_account_migrations (name, completed_at) VALUES (").bind(IMPORT)
-                .push(", ").bind(imported_at.as_str()).push(")");
-            sql(&db, query.as_str()).await?;
-            Ok(())
-        }).await?;
-        crate::accounts::atomic(&marker, self.database.name.as_bytes(), 0o600).await?;
-        // Backups are retained for recovery only. Authentication never reads them.
-        for source in [data.join("users.json"), config.to_owned()] {
-            if source.exists() {
-                let backup = source.with_extension("json.pre-chusql.bak");
-                require(!backup.exists(), "旧账户备份已存在，需人工核对")?;
-                tokio::fs::rename(source, backup).await?;
-            }
-        }
-        Ok(())
     }
 }

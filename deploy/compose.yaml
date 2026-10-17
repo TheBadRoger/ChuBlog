@@ -7,7 +7,7 @@ x-logging: &logging
 x-backend-build: &backend-build
   context: ..
   dockerfile: deploy/Dockerfile
-  args:
+  args: &backend-build-args
     DEBIAN_MIRROR: ${DEBIAN_MIRROR:-mirrors.tencentyun.com}
     DEBIAN_IMAGE: ${REGISTRY_PREFIX-mirror.ccs.tencentyun.com/library/}debian:trixie-slim
     RUST_IMAGE: ${REGISTRY_PREFIX-mirror.ccs.tencentyun.com/library/}rust:1-trixie
@@ -18,7 +18,6 @@ services:
     build: { <<: *backend-build, target: init }
     volumes:
       - content:/data
-      - authorization:/auth
       - ingress:/srv/ingress
       - database:/db-data
       - db-logs:/db-logs
@@ -37,7 +36,6 @@ services:
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
     volumes:
       - content:/data
-      - authorization:/auth
       - ingress:/srv/ingress
     read_only: true
     tmpfs: ["/tmp:size=128m,noexec,nosuid"]
@@ -82,7 +80,12 @@ services:
       retries: 3
     logging: *logging
   db:
-    build: { <<: *backend-build, target: database }
+    build:
+      <<: *backend-build
+      target: database
+      args:
+        <<: *backend-build-args
+        CHUSQL_WITH_CLI: ${CHUSQL_WITH_CLI:-false}
     depends_on:
       init: { condition: service_completed_successfully }
     environment:
@@ -122,6 +125,5 @@ networks:
 volumes:
   content: {}
   ingress: {}
-  authorization: {}
   database: {}
   db-logs: {}

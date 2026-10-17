@@ -183,6 +183,14 @@ async fn serve(app: Arc<App>, request: Request) -> ApiResult<Response> {
         if user.hash != hash {
             return Err(ApiError(StatusCode::UNAUTHORIZED, "口令已变更".into()));
         }
+        if user.level == crate::accounts_db::Level::Master {
+            crate::starter::ensure(&app).await.map_err(|_| {
+                ApiError(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "初始文章正在准备，请稍后重试".into(),
+                )
+            })?;
+        }
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)

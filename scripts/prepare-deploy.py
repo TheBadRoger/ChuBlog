@@ -12,6 +12,7 @@ parser.add_argument('--env-file', type=Path, help='Compose environment file (def
 parser.add_argument('--build-database', action='store_true', help='compatibility option; database is always built inside Docker')
 parser.add_argument('--sources-env-file', type=Path, help='optional second Compose env file overriding build download sources')
 parser.add_argument('--project-name', help='Compose project name')
+parser.add_argument('--with-cli', action='store_true', help='build and install the ChuSQL CLI in the database image')
 args = parser.parse_args()
 if shutil.which('docker') is None:
     parser.error('Docker with the Compose plugin is required; see docs/deployment.md.')
@@ -34,6 +35,7 @@ command.extend([
 ])
 # Build-only parsing needs values even before deploy.sh creates runtime credentials.
 build_env = os.environ.copy()
+build_env['CHUSQL_WITH_CLI'] = 'true' if args.with_cli else 'false'
 for key in ['CHUSQL_ROOT_PASSWORD', 'CHUSQL_PASSWORD']:
     build_env[key] = build_env.get(key) or 'unused-build-placeholder'
 try:

@@ -1,18 +1,21 @@
--- Durable identity data. Never delete or rebuild this table with article indexes.
--- UTC timestamps use RFC 3339 strings; NULL means the user has never signed in.
--- permission_level: 0=BANNED, 1=MEMBER, 2=AUTHOR, 3=MASTER.
--- Replace INT with a SQL ENUM in a later, explicit data migration.
+-- Durable identity and installation data; never rebuilt with article indexes.
+-- TIMESTAMP values are UTC YYYY-MM-DD HH:MM:SS. The API emits UTC RFC 3339.
+CREATE TYPE blog_permission AS ENUM ('BANNED', 'MEMBER', 'AUTHOR', 'MASTER');
+
 CREATE TABLE blog_users (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    last_login_at TEXT,
-    permission_level INT NOT NULL
+    username VARCHAR(32) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    last_login_at TIMESTAMP,
+    permission_level blog_permission NOT NULL DEFAULT 'MEMBER'
 );
 
--- Records the one-time import of legacy JSON accounts, including an empty import.
-CREATE TABLE blog_account_migrations (
-    name TEXT PRIMARY KEY,
-    completed_at TEXT NOT NULL
+CREATE TABLE blog_site (
+    id INT PRIMARY KEY,
+    name VARCHAR(120) NOT NULL,
+    description VARCHAR(1000) NOT NULL,
+    master_user_id INT NOT NULL UNIQUE,
+    installed_at TIMESTAMP NOT NULL,
+    starter_commit CHAR(40)
 );

@@ -181,6 +181,14 @@ pub fn decode_asset(asset: &Asset) -> Result<Vec<u8>> {
 }
 
 pub async fn git(repo: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
+    git_as(repo, args, input, "ChuBlog").await
+}
+pub async fn git_as(
+    repo: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    author: &str,
+) -> Result<Vec<u8>> {
     let mut command = Command::new("git");
     command
         .arg("--no-pager")
@@ -193,9 +201,9 @@ pub async fn git(repo: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/etc/chublog/gitconfig")
-        .env("GIT_AUTHOR_NAME", "ChuBlog")
+        .env("GIT_AUTHOR_NAME", author)
         .env("GIT_AUTHOR_EMAIL", "blog@localhost")
-        .env("GIT_COMMITTER_NAME", "ChuBlog")
+        .env("GIT_COMMITTER_NAME", author)
         .env("GIT_COMMITTER_EMAIL", "blog@localhost")
         .env("GIT_INDEX_FILE", repo.join("publish.index"))
         .stdin(Stdio::piped())

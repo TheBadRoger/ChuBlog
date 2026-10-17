@@ -34,10 +34,6 @@ pub enum Role {
 pub struct Grant {
     pub enabled: bool,
     pub role: Role,
-    #[serde(default)]
-    pub prefixes: Vec<String>,
-    #[serde(default, rename = "ssh_key", skip_serializing)]
-    pub _legacy_ssh_key: Option<String>,
 }
 #[derive(Clone)]
 struct Session {
@@ -100,13 +96,7 @@ pub async fn hash_password(value: String) -> Result<String> {
     })
     .await?
 }
-pub async fn load(
-    data: &FilePath,
-    config: &FilePath,
-    repository: std::path::PathBuf,
-    store: crate::accounts_db::Store,
-) -> Result<Accounts> {
-    store.initialize(data, config, &repository).await?;
+pub async fn load(store: crate::accounts_db::Store) -> Result<Accounts> {
     Ok(Accounts {
         store,
         sessions: BTreeMap::new(),
@@ -181,7 +171,7 @@ async fn authenticate(
     Ok(current)
 }
 
-fn rate(accounts: &mut Accounts) -> ApiResult<()> {
+pub(crate) fn rate(accounts: &mut Accounts) -> ApiResult<()> {
     let now = Instant::now();
     while accounts
         .attempts
@@ -200,7 +190,7 @@ fn rate(accounts: &mut Accounts) -> ApiResult<()> {
     accounts.attempts.push_back(now);
     Ok(())
 }
-fn token() -> String {
+pub(crate) fn token() -> String {
     let mut bytes = [0; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
@@ -391,7 +381,6 @@ pub async fn users(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult
             let grant = user.level.grant();
             view["enabled"] = json!(grant.enabled);
             view["role"] = json!(grant.role);
-            view["prefixes"] = json!([]);
             (user.username, view)
         })
         .collect();
@@ -402,8 +391,6 @@ pub async fn users(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult
 pub struct GrantInput {
     enabled: bool,
     role: Role,
-    #[serde(default)]
-    prefixes: Vec<String>,
 }
 pub async fn grant(
     State(app): State<Arc<App>>,
@@ -412,7 +399,6 @@ pub async fn grant(
     Json(input): Json<GrantInput>,
 ) -> ApiResult<Json<Value>> {
     let actor = authorize(&app, &headers, true, true).await?;
-    ensure_prefixes(&input.prefixes).map_err(bad)?;
     let mut accounts = app.accounts.lock().await;
     accounts
         .store
@@ -428,17 +414,6 @@ pub async fn grant(
     });
     tracing::info!(action = "permission_changed", user = %name, administrator = %actor.username);
     Ok(Json(json!({"status":"saved"})))
-}
-fn ensure_prefixes(prefixes: &[String]) -> Result<()> {
-    ensure!(
-        prefixes.len() <= 8
-            && prefixes.iter().all(|p| (2..=64).contains(&p.len())
-                && p.ends_with('-')
-                && p.bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')),
-        "前缀格式无效"
-    );
-    Ok(())
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

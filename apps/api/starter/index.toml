@@ -1,0 +1,15 @@
+[[articles]]
+id = "publishing"
+folder = "posts/publishing"
+title = "发文章教程"
+description = "从克隆个人仓库到发布、更新和撤回文章。"
+tags = ["使用指南"]
+public = true
+
+[[articles]]
+id = "development"
+folder = "posts/development"
+title = "开发进度"
+description = "博客已经完成的功能，以及接下来要做的事。"
+tags = ["开发记录"]
+public = true

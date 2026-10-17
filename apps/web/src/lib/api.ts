@@ -1,3 +1,4 @@
+export interface SiteState { installed: boolean; owner?: string | null; site: { name: string; description: string } | null }
 export interface Metadata {
   title: string;
   slug: string;

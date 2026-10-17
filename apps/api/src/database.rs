@@ -5,7 +5,6 @@ use std::time::Duration;
 pub const ACCOUNTS_SQL: &str = include_str!("../sql/accounts.sql");
 pub const ARTICLES_SQL: &str = include_str!("../sql/articles.sql");
 pub const CREATE_DATABASE_SQL: &str = include_str!("../sql/create-database.sql");
-pub const LEGACY_ARTICLES_SQL: &str = include_str!("../sql/legacy-articles.sql");
 
 #[derive(Clone)]
 pub struct Database {
@@ -57,6 +56,21 @@ fn identifier(value: &str) -> Result<()> {
         "SQL 标识符无效"
     );
     Ok(())
+}
+
+// ChuSQL TIMESTAMP accepts second precision without a timezone. Store UTC only.
+pub fn to_timestamp(value: &str) -> Result<String> {
+    Ok(chrono::DateTime::parse_from_rfc3339(value)?
+        .with_timezone(&chrono::Utc)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string())
+}
+pub fn from_timestamp(value: &str) -> Result<String> {
+    Ok(
+        chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")?
+            .and_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    )
 }
 
 pub fn statements(script: &str) -> Result<Vec<String>> {
@@ -123,16 +137,29 @@ pub async fn execute_script(db: &Client, script: &str) -> Result<()> {
     }
     Ok(())
 }
-pub async fn ensure_tables(db: &Client, script: &str) -> Result<()> {
+pub async fn ensure_schema(db: &Client, script: &str) -> Result<()> {
     for sql in statements(script)? {
         let words: Vec<_> = sql.split_whitespace().take(3).collect();
         ensure!(
             words.len() == 3
                 && words[0].eq_ignore_ascii_case("CREATE")
-                && words[1].eq_ignore_ascii_case("TABLE"),
-            "建表脚本只接受 CREATE TABLE；已有表结构变更请显式迁移"
+                && (words[1].eq_ignore_ascii_case("TABLE")
+                    || words[1].eq_ignore_ascii_case("TYPE")),
+            "初始化脚本只接受 CREATE TABLE 或 CREATE TYPE"
         );
         identifier(words[2])?;
+        if words[1].eq_ignore_ascii_case("TYPE") {
+            let domains = db.query("SHOW DOMAINS").await?;
+            ensure!(!domains.truncated, "自定义类型列表被截断");
+            if !domains
+                .rows
+                .iter()
+                .any(|row| row.first().and_then(chusql_driver::Value::as_str) == Some(words[2]))
+            {
+                db.query(&sql).await?;
+            }
+            continue;
+        }
         if db
             .query(&format!("SELECT * FROM {} LIMIT 0", words[2]))
             .await
@@ -148,12 +175,25 @@ pub async fn ensure_tables(db: &Client, script: &str) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn timestamps_use_utc_seconds_at_the_database_boundary() {
+        assert_eq!(
+            to_timestamp("2026-10-17T12:34:56.789+08:00").unwrap(),
+            "2026-10-17 04:34:56"
+        );
+        assert_eq!(
+            from_timestamp("2026-10-17 04:34:56").unwrap(),
+            "2026-10-17T04:34:56Z"
+        );
+        assert!(to_timestamp("").is_err());
+        assert!(from_timestamp("2026-99-99 00:00:00").is_err());
+    }
+    #[test]
     fn sql_scripts_preserve_literals_and_reject_unfinished_input() {
         let result = statements("-- setup\nCREATE TABLE t (x TEXT); /* a /* nested */ b */ INSERT INTO t VALUES ('a;''b--c');").unwrap();
         assert_eq!(result.len(), 2);
         assert!(result[1].contains("'a;''b--c'"));
         assert!(statements("SELECT 'oops").is_err());
         assert!(statements("/* oops").is_err());
-        assert_eq!(statements(ACCOUNTS_SQL).unwrap().len(), 2);
+        assert_eq!(statements(ACCOUNTS_SQL).unwrap().len(), 3);
     }
 }

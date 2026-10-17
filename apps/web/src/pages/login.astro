@@ -1,10 +1,15 @@
 ---
 import Base from '../layouts/Base.astro';
+import { readApi, type SiteState } from '../lib/api';
+try {
+  if (!(await readApi<SiteState>('/api/site')).installed) return Astro.redirect('/setup');
+} catch {}
 const register = Astro.url.searchParams.get('mode') === 'register';
 ---
 <Base title={register ? '注册' : '登录'}>
   <div class="auth-shell">
     <header class="page-heading"><h1>{register ? '注册账户' : '登录'}</h1><p>{register ? '注册后可申请文章发布权限，使用账号密码通过 HTTPS Git 发布。' : '管理账户和文章发布权限。'}</p></header>
+    {Astro.url.searchParams.get('installed') === '1' && <p class="notice">安装完成，请使用刚创建的站长账户登录。</p>}
     <nav class="auth-tabs" aria-label="账户入口"><a href="/login" aria-current={!register ? 'page' : undefined}>登录</a><a href="/login?mode=register" aria-current={register ? 'page' : undefined}>注册</a></nav>
     {Astro.url.searchParams.get('changed') === '1' && <p class="notice">密码已修改，请重新登录。</p>}
     {Astro.url.searchParams.get('registered') === '1' && <p class="notice">账户已创建，请登录。</p>}

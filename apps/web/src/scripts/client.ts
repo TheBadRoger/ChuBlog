@@ -45,6 +45,16 @@ function checkPassword(password: string) {
   if (size < 12 || size > 1024) throw new Error('密码需要在 12 至 1024 个字节之间。');
 }
 
+formAction('setup-form', async (data, form) => {
+  const password = value(data, 'password');
+  checkPassword(password);
+  if (password !== value(data, 'confirm')) throw new Error('两次输入的密码不一致。');
+  await api('/api/setup', 'POST', { token: value(data, 'token').trim(), name: value(data, 'name'),
+    description: value(data, 'description'), username: value(data, 'username'), password });
+  form.reset();
+  location.assign('/login?installed=1');
+});
+
 formAction('auth-form', async (data, form) => {
   const credentials = { username: value(data, 'username'), password: value(data, 'password') };
   if (form.dataset.mode === 'register') {
@@ -96,7 +106,9 @@ async function loadAdmin(account: Account) {
       const controls = element('div'); controls.className = 'admin-user-controls';
       const select = element('select'); select.setAttribute('aria-label', `${username} 的角色`);
       for (const [role, label] of Object.entries(roles)) {
-        const option = element('option', label); option.value = role; option.selected = role === grant.role; select.append(option);
+        const option = element('option', label); option.value = role; option.selected = role === grant.role;
+        if (role === 'admin' && grant.role !== 'admin') option.disabled = true;
+        select.append(option);
       }
       const label = element('label'); const enabled = element('input'); enabled.type = 'checkbox'; enabled.checked = grant.enabled;
       label.append(enabled, document.createTextNode('启用账户'));

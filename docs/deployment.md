@@ -12,9 +12,26 @@ scripts/deploy.sh
 
 脚本依次生成配置、获取固定版本的外部依赖、在 Docker 内构建镜像、启动并初始化数据库，最后启动博客并等待服务就绪。不需要另行执行 `hash-password`、`db-init` 或 `docker compose up`。
 
+数据库结构以 [`accounts.sql`](../apps/api/sql/accounts.sql) 和 [`articles.sql`](../apps/api/sql/articles.sql) 为准，账户权限使用自定义 ENUM，文本按用途声明长度，时间使用 TIMESTAMP，详见[数据库结构](database.md)。此版本不支持旧整数权限数据库或 JSON 账户导入；旧版测试环境请改用新数据库卷，脚本不会自动转换或删除已有数据。初始化和备份说明见[运维文档](operations.md)。
+
 首次运行自动创建权限为 `600` 的 `.env`，生成两份不同的随机数据库口令。重复部署保留已有口令和数据；需要备份 `.env` 及持久卷。博客默认监听 `127.0.0.1:1741`，无需配置域名、站点地址或 HTTPS 端口。`.env` 中的 `WEB_PORT=1741` 同时控制程序监听、容器端口、宿主机映射和健康检查。不再配置或开放文章 SSH 端口。
 
-部署不创建博客管理员，也不要求填写管理员密码。首页继续显示施工说明和导航；文章阅读、注册登录、账户设置及 HTTPS Git 服务照常启动。新注册用户均为 `reader`，第一个用户也不会自动提权。已有账户与发布授权保持有效；空站点的发布授权仍需后续确定的管理员管理流程，注册本身不授予发布权。
+### 首次安装网站
+
+容器启动不会自动生成站长密码，也不从环境变量读取站长凭据。首次访问网站会进入 `/setup`，填写网站名称、简介、站长账号和密码。名称用于导航、页脚和页面标题，简介用于默认页面描述。
+
+安装还需要从服务器获取一次安装密钥，在项目根目录执行：
+
+```sh
+docker compose --env-file .env -f deploy/compose.yaml \
+  exec api cat /data/setup-token
+```
+
+自定义配置文件或项目名时，沿用相同参数。安装密钥由 API 使用安全随机数生成，以权限 `600` 保存在私有 `content` 卷，不通过公共 API 返回，也不写日志。网站公开访问时，密钥用于防止其他人抢先创建站长。完成安装后，即使持有密钥也无法再次安装。
+
+提交成功后，在登录页使用刚创建的账户登录。网站元数据、站长 ID 与安装完成时间保存在 ChuSQL 的 `blog_site` 单例记录中，站长账户以 `MASTER` 权限保存在 `blog_users`；两者在同一事务内提交。站长唯一，不能通过授权接口给他人分配 `MASTER`，也不能封禁或降级自己。普通注册只创建 `MEMBER`，安装前不开放注册。
+
+安装后首页为导航页。安装程序以数据库站长用户名创建个人 Git 仓库，首次写入发文教程和开发进度两篇公开 Markdown 文章，随后由正常同步流程导入发布。站长克隆仓库即可修改这些文章；以后重启不会覆盖或补回已撤回内容。仓库写入失败会由后台重试，安装事务和站长账户不会回滚或重新开放。重复部署保留安装状态，不会重新开放入口。数据库故障时安装页显示不可用，不当作尚未安装。此版本没有旧站点安装状态迁移，应从空账户表完成首次安装。
 
 ## 更新与卸载
 
@@ -32,7 +49,7 @@ scripts/update.sh
 scripts/uninstall.sh
 ```
 
-**永久删除文章、账户、数据库和授权等项目持久数据**时，使用：
+**永久删除文章、账户、数据库等项目持久数据**时，使用：
 
 ```sh
 scripts/uninstall.sh --purge
@@ -52,7 +69,29 @@ Rust API、ChuSQL 存储库和 Haskell 服务端在 Docker 多阶段构建中编
 
 Compose 编排 Astro 前端 `web`、Rust API `api`、ChuSQL 数据库 `db` 。`init` 初始化持久卷，`db-init` 用于首次数据库授权。
 
-`web` 是博客前端，不是 ChuSQL Web。数据库只构建 `chusql-server`、`csql-bootstrap` 与存储库，不构建或启动 `chusql-web`、`csql-web` 或数据库管理网站。
+`web` 是博客前端，不是 ChuSQL Web。数据库默认只构建 `chusql-server`、`csql-bootstrap` 与存储库；可选安装命令行客户端，不构建或启动 `chusql-web`、`csql-web` 或数据库管理网站。
+
+### 可选安装数据库 CLI
+
+需要直接执行 SQL 时，在部署命令中添加 `--with-cli`。客户端也在 Docker 内编译，宿主机无需安装 Haskell 工具链：
+
+```sh
+scripts/deploy.sh --with-cli
+```
+
+更新时使用 `scripts/update.sh --with-cli`；单独构建镜像时使用 `python3 scripts/prepare-deploy.py --with-cli`。此选项不保存到配置文件，后续重新部署或更新时需继续携带，不带选项会构建不含 CLI 的镜像。数据库持久卷保留。
+
+部署完成后，在项目根目录进入数据库命令行：
+
+```sh
+docker compose --env-file .env -f deploy/compose.yaml \
+  exec db csql --config /etc/chusql/cli.toml \
+  --user root --database chublog --history /tmp/chusql_history
+```
+
+按提示输入 `.env` 中的 `CHUSQL_ROOT_PASSWORD`，这是数据库 root 密码，与博客账户密码不同。客户端通过容器回环地址连接，不开放额外端口。历史记录写入临时目录，容器重建后不保留。自定义部署使用相同的 `--env-file` 和 `-p` 项目名。
+
+连接后可执行 `SELECT id, username, created_at, last_login_at, permission_level FROM blog_users;` 检查账户数据。权限列使用自定义 ENUM，值为 `BANNED`、`MEMBER`、`AUTHOR` 或 `MASTER`。
 
 前端通过同源 `/api/*` 和 `/git/*` 路由转发请求到内部 `api:3001`。普通 API 请求体上限 8 KiB，Git 请求体上限 9 MiB，Git pack 上限 8 MiB。服务器现有的反向代理只需将整个站点转发到 `127.0.0.1:1741`，无需分别配置页面、API 和 Git。若服务器代理另有请求体限制，应允许 Git 的 9 MiB 请求，不要将普通账户 API 的 8 KiB 限制套用到整个站点。项目不启动 Caddy，不监听 80/443，也不管理域名或证书。
 
@@ -108,7 +147,7 @@ python3 scripts/smoke.py \
 
 ## 验证部署
 
-在服务器本机打开 `http://127.0.0.1:1741`，或访问服务器反向代理配置的域名，确认首页显示施工说明，且可以进入文章列表与账户页面。检查服务状态与日志：
+在服务器本机打开 `http://127.0.0.1:1741`，或访问服务器反向代理配置的域名，首次确认进入安装页面，安装后确认首页显示网站导航，且能进入文章列表、账户及站长的两篇内置文章。检查服务状态与日志：
 
 ```sh
 docker compose --env-file .env -f deploy/compose.yaml ps
@@ -133,4 +172,4 @@ python3 scripts/smoke-deployment.py --sources-env-file deploy/sources.public.env
 
 只允许服务器上可信代理及本机进程访问博客回环端口，不要将其改为公网监听或直接暴露内部 API。多级代理应由服务器自行配置可信上游，不直接信任公网客户端提供的转发头。
 
-从旧版本更新时，部署脚本会通过 `--remove-orphans` 移除同一 Compose 项目中遗留的 Caddy 容器，不影响服务器独立管理的 Caddy。旧证书数据卷不会自动删除。旧 `.env` 中的站点、域名及 HTTP/HTTPS 入口变量会被清理，数据库凭据保留。
+部署脚本仅管理本项目的 Compose 服务。服务器独立运行的 Caddy 及其证书由你维护，数据库凭据由 `.env` 保存。

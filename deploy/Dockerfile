@@ -44,6 +44,13 @@ RUN --mount=type=cache,target=/root/.stack \
     && stack --system-ghc --no-install-ghc --no-terminal --jobs 2 build chusql-bootstrap:exe:csql-bootstrap --no-test --no-bench --fast --copy-bins --local-bin-path /out \
     && cp ../chusql-core/storage/target/release/libchusql_core_storage.so /out/
 
+ARG CHUSQL_WITH_CLI=false
+RUN --mount=type=cache,target=/root/.stack \
+    mkdir /cli && if [ "$CHUSQL_WITH_CLI" = true ]; then \
+      cd chusql-cli && stack --system-ghc --no-install-ghc --no-terminal --jobs 2 \
+      build chusql-cli:exe:csql --no-test --no-bench --fast --copy-bins --local-bin-path /cli; \
+    fi
+
 FROM ${DEBIAN_IMAGE} AS base
 ARG DEBIAN_MIRROR=mirrors.tencentyun.com
 RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources
@@ -56,7 +63,7 @@ FROM base AS api
 COPY deploy/hooks /hooks
 RUN chmod 755 /hooks/pre-receive
 USER 10001:10002
-ENV API_BIND=0.0.0.0:3001 DATA_DIR=/data CHUBLOG_AUTH_CONFIG=/auth/publishers.json INGRESS_DIR=/srv/ingress/authors RUST_LOG=info
+ENV API_BIND=0.0.0.0:3001 DATA_DIR=/data INGRESS_DIR=/srv/ingress/authors RUST_LOG=info
 ENTRYPOINT ["chublog-api"]
 
 FROM base AS init
@@ -69,10 +76,13 @@ ARG DEBIAN_MIRROR=mirrors.tencentyun.com
 RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources
 RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 ca-certificates && rm -rf /var/lib/apt/lists/* && useradd -u 10003 -M -s /usr/sbin/nologin chusql
 COPY --from=database-build /out/chusql-server /out/csql-bootstrap /out/libchusql_core_storage.so /usr/local/bin/
+COPY --from=database-build /cli/ /usr/local/bin/
 COPY deploy/chusql.toml /etc/chusql/settings.toml
+COPY deploy/chusql-cli.toml /etc/chusql/cli.toml
 COPY deploy/db-entrypoint.sh /usr/local/bin/db-entrypoint
 RUN chmod 755 /usr/local/bin/db-entrypoint
 ENV LD_LIBRARY_PATH=/usr/local/bin
 RUN chusql-server --help && csql-bootstrap --help
+RUN if command -v csql >/dev/null 2>&1; then csql --help; fi
 USER 10003:10003
 ENTRYPOINT ["/usr/local/bin/db-entrypoint"]

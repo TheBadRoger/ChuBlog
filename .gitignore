@@ -17,3 +17,6 @@ external
 /todo.md
 /Caddyfile
 /deploy/Caddyfile
+
+# Replaced by articles in the site owner repository.
+/apps/web/src/pages/publishing.astro

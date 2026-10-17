@@ -2,13 +2,18 @@
 
 [返回项目首页](../README.md)
 
-前端位于 `apps/web`，使用 Astro、TypeScript 和 Node 服务端渲染。首页按要求展示居中的“个人博客正在施工中”，下方居中列出已完成和未完成部分。
+网站导航、页脚和标题使用安装时填写的网站名称，页面默认描述使用网站简介；元数据不可用时回退到 ChuBlog，不阻断已有公共文章阅读。
+
+前端位于 `apps/web`，使用 Astro、TypeScript 和 Node 服务端渲染。首页为导航页，展示网站名称、简介，以及文章、账户、发文教程和开发进度入口。教程与进度使用正常文章阅读页。
 
 ## 页面
 
 | 地址 | 功能 |
 | --- | --- |
-| `/` | 施工说明、进度与导航，内容全部居中 |
+| `/` | 未安装时跳转安装页；安装后为网站导航首页 |
+| `/setup` | 网站名称、简介、站长账号密码和安装密钥；安装完成后跳转登录 |
+| `/posts/站长名~publishing` | 站长名下的发文教程，首页提供入口 |
+| `/posts/站长名~development` | 站长名下的开发进度，首页提供入口 |
 | `/articles` | 文章列表、标题/简介/作者/标签搜索、标签筛选和分页 |
 | `/posts/作者名~文章ID` | 阅读入口文档、图片和文章元信息 |
 | `/posts/作者名~文章ID/页面名.md` | 阅读同文章的其他可达页面，保留相对链接和锚点 |
@@ -66,4 +71,4 @@ python3 scripts/smoke.py --browser-test \
 - [webapp-testing](../.agents/skills/webapp-testing/SKILL.md)，来源为 [Anthropic skills](https://github.com/anthropics/skills/tree/main/skills/webapp-testing)。
 - [web-design-guidelines](../.agents/skills/web-design-guidelines/SKILL.md)，来源为 [Vercel agent skills](https://github.com/vercel-labs/agent-skills/tree/main/skills/web-design-guidelines)。
 
-后续会话可继续发现这些技能。本轮已直接读取，按项目要求采用居中施工页、克制排版、键盘焦点、表单标签和真实浏览器检查。
+后续会话可继续发现这些技能。本轮已直接读取，沿用简洁导航页、克制排版、键盘焦点、表单标签和真实浏览器检查。

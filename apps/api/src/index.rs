@@ -1,6 +1,7 @@
 use crate::content::{Snapshot, Status};
+use crate::database::to_timestamp;
 use anyhow::{Context, Result, ensure};
-use chusql_driver::{Client, Query};
+use chusql_driver::{Client, Param, Query};
 
 async fn connect() -> Result<Client> {
     crate::database::Database::from_env()?.connect().await
@@ -11,24 +12,20 @@ pub async fn rebuild(snapshot: &Snapshot) -> Result<()> {
 }
 
 pub(crate) async fn rebuild_with_db(snapshot: &Snapshot, db: Client) -> Result<()> {
-    if db
-        .query("SELECT id FROM blog_articles LIMIT 1")
-        .await
-        .is_ok()
-        && db
-            .query("SELECT created_at FROM blog_articles LIMIT 1")
-            .await
-            .is_err()
-    {
-        crate::database::execute_script(&db, crate::database::LEGACY_ARTICLES_SQL).await?;
-    }
-    crate::database::ensure_tables(&db, crate::database::ARTICLES_SQL).await?;
+    crate::database::ensure_schema(&db, crate::database::ARTICLES_SQL).await?;
     db.query("BEGIN").await?;
     db.query("DELETE FROM blog_pages").await?;
     db.query("DELETE FROM blog_article_tags").await?;
     db.query("DELETE FROM blog_articles").await?;
     for post in snapshot.posts.values() {
         let meta = &post.meta;
+        let created = to_timestamp(&meta.created_at)?;
+        let updated = to_timestamp(&meta.updated)?;
+        let published = if meta.date.is_empty() {
+            None
+        } else {
+            Some(to_timestamp(&meta.date)?)
+        };
         let status = match meta.status {
             Status::Draft => "draft",
             Status::Published => "published",
@@ -37,9 +34,9 @@ pub(crate) async fn rebuild_with_db(snapshot: &Snapshot, db: Client) -> Result<(
             .bind(meta.slug.as_str()).push(", ").bind(post.author.as_str()).push(", ")
             .bind(post.article_id.as_str()).push(", ").bind(meta.title.as_str()).push(", ")
             .bind(meta.description.as_str()).push(", ").bind(status).push(", ")
-            .bind(meta.created_at.as_str()).push(", ").bind(meta.date.as_str()).push(", ").bind(meta.updated.as_str()).push(", ")
+            .bind(created.as_str()).push(", ").bind(published.as_deref().map(Param::Text).unwrap_or(Param::Null)).push(", ").bind(updated.as_str()).push(", ")
             .bind(post.path.as_str()).push(", ").bind(post.format.as_str()).push(", ")
-            .bind(meta.cover.as_deref().unwrap_or("")).push(", ").bind(post.entry.as_str()).push(", ")
+            .bind(meta.cover.as_deref().map(Param::Text).unwrap_or(Param::Null)).push(", ").bind(post.entry.as_str()).push(", ")
             .bind(post.git_commit.as_str()).push(")");
         db.query(q.as_str()).await?;
         let folder = post.path.rsplit_once('/').context("正文路径无效")?.0;
@@ -72,10 +69,12 @@ pub(crate) async fn rebuild_with_db(snapshot: &Snapshot, db: Client) -> Result<(
         .filter(|p| p.meta.status == Status::Published)
     {
         let meta = &post.meta;
+        let published = to_timestamp(&meta.date)?;
+        let updated = to_timestamp(&meta.updated)?;
         let q = Query::new("INSERT INTO blog_posts (slug, title, description, published_at, updated_at, path, git_commit) VALUES (")
             .bind(meta.slug.as_str()).push(", ").bind(meta.title.as_str()).push(", ")
-            .bind(meta.description.as_str()).push(", ").bind(meta.date.as_str()).push(", ")
-            .bind(meta.updated.as_str()).push(", ").bind(post.path.as_str())
+            .bind(meta.description.as_str()).push(", ").bind(published.as_str()).push(", ")
+            .bind(updated.as_str()).push(", ").bind(post.path.as_str())
             .push(", ").bind(snapshot.commit.as_str()).push(")");
         db.query(q.as_str()).await?;
         for tag in &meta.tags {
@@ -125,8 +124,8 @@ pub async fn provision() -> Result<()> {
         .await?;
     db.close().await;
     let db = connect().await?;
-    crate::database::ensure_tables(&db, crate::database::ACCOUNTS_SQL).await?;
-    crate::database::ensure_tables(&db, crate::database::ARTICLES_SQL).await?;
+    crate::database::ensure_schema(&db, crate::database::ACCOUNTS_SQL).await?;
+    crate::database::ensure_schema(&db, crate::database::ARTICLES_SQL).await?;
     db.close().await;
     Ok(())
 }

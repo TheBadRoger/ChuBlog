@@ -1,19 +1,7 @@
-use crate::accounts::Grant;
 use crate::content::{self, Scan, Snapshot};
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Config {
-    pub repository: PathBuf,
-    pub publishers: BTreeMap<String, Grant>,
-}
 
 pub fn author_repository(root: &Path, identity: &str) -> Result<PathBuf> {
     ensure!(

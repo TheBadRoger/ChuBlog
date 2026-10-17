@@ -41,12 +41,6 @@ p { line-height: 1.8; }
 .button-quiet { color: var(--ink); background: white; border-color: var(--line); }
 .button-quiet:hover { background: var(--soft); color: var(--ink); border-color: #a6b5bd; }
 .text-link { color: var(--accent); font-size: 14px; text-decoration: underline; }
-.construction { min-height: calc(100svh - 214px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 45px 24px 92px; text-align: center; }
-.construction h1 { font-size: clamp(32px, 5.4vw, 66px); line-height: 1.35; letter-spacing: -.05em; font-weight: 500; margin: 0 0 47px; }
-.construction-progress { width: min(100%, 750px); font-size: 13px; color: var(--muted); }
-.construction-progress section + section { margin-top: 24px; }
-.construction-progress h2 { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 9px; }
-.construction-progress p { margin-bottom: 0; line-height: 2; text-wrap: pretty; }
 .home-links { margin-top: 42px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 25px; }
 .page-shell { width: min(100% - 48px, 820px); margin: 54px auto 65px; }
 .page-heading { margin-bottom: 34px; }
@@ -141,9 +135,6 @@ textarea { resize: vertical; line-height: 1.7; overflow-wrap: anywhere; }
 @media (max-width: 600px) {
   .site-header { padding-top: 28px; }
   .site-nav { margin-top: 16px; }
-  .construction { min-height: calc(100svh - 190px); padding: 40px 20px 75px; }
-  .construction h1 { margin-bottom: 38px; }
-  .construction-progress p { max-width: 320px; margin-inline: auto; line-height: 2.1; }
   .home-links { margin-top: 34px; gap: 22px; }
   .page-shell, .reading-shell, .account-shell { width: calc(100% - 40px); margin-top: 32px; }
   .page-heading h1 { font-size: 29px; }

@@ -1,0 +1,6 @@
+[server]
+listen_host = "127.0.0.1"
+port = 7777
+max_message = 1048576
+max_rows = 1000
+sudo_auth_user = ""

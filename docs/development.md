@@ -49,6 +49,8 @@ python3 scripts/fetch-deps.py --database-repo ../ChuSQL --driver-repo ../ChuSQLD
 
 ## 开发检查
 
+本地验证不运行 Docker 测试或测试镜像构建。日常只执行源码检查、单元测试和使用命令替身的部署脚本测试；需要真实容器的联调由部署环境按需手动执行。
+
 ```sh
 cargo test --all-targets
 cargo fmt --check
@@ -57,7 +59,15 @@ cargo clippy --all-targets -- -D warnings
 
 前端开发和构建见 [Astro 前端](frontend.md)。
 
-## 联调
+以下命令仅供部署环境手动验证，不在本地自动运行。账户集成测试需要支持 ENUM 的真实 ChuSQL 镜像，在临时容器和数据库中验证，不读取 JSON 夹具：
+
+```sh
+python3 scripts/test-accounts-db.py --database-image chublog-db:latest
+```
+
+测试涵盖 ENUM 约束、注册登录、权限变更及账户持久化；无数据库时默认的 Cargo 测试跳过这些用例。更新 ChuSQL 依赖只提交子模块指针，不将外部源码纳入主仓库。
+
+## 部署环境联调
 
 部署镜像在 Docker 内编译，不需要宿主机 Rust 或 Haskell 工具链；运行上面的源码开发检查时仍须自行安装 Rust。准备脚本的轻量回归检查：
 
@@ -79,7 +89,7 @@ python3 scripts/smoke.py --browser-test \
 - 联调使用独立随机命名的 Compose 项目、本机 1741 端口，测试结束清理自己创建的容器与卷。
 - 覆盖真实 HTTP Basic 身份与发布授权、作者间 Git 对象隔离、非法推送、TOML 暂存与修复、多页链接、系统时间、索引删除、ChuSQL 元信息创建/删除、发布撤回、断库阅读、重启与撤权。
 - `--https` 使用临时 Caddy、私有测试 CA 和本机 18443 端口，Git/HTTP 客户端显式信任该测试 CA，保持证书校验开启；需要本机可用的 Caddy 镜像。该容器不进入生产编排，测试后删除。
-- 管理员仅由隔离测试脚本写入测试卷作为夹具，生产部署没有管理员环境变量或自动建号步骤。
+- 隔离联调通过首次安装接口创建真实入库的测试站长并初始化两篇文章；生产站点同样在 `/setup` 完成初始化，不配置管理员环境变量。
 - 该测试会拉取基础镜像，需要 Docker 可用。
 
 ## 历史清理后的协作
@@ -87,3 +97,9 @@ python3 scripts/smoke.py --browser-test \
 - 驱动的旧源码副本已从主仓库可达历史移除，后续只保留外部子模块配置。
 - 历史重写后，已有克隆建议重新克隆并初始化依赖；不要把旧 main 合并回来，否则可能重新引入已删除的依赖历史。
 - 自建服务器的不可达对象清理与其他人的旧克隆需要分别处理，GitHub 缓存和旧提交直链的回收由平台管理。
+
+## 内置文章与类型文档
+
+内置文章源文件位于 `apps/api/starter/`，以 `index.toml` 和 Markdown 保存。修改模板会影响之后的新安装，不会覆盖已安装站长仓库；已有站点由站长通过 Git 更新文章。`apps/api/src/starter.rs` 负责首次写入与失败恢复，普通文章校验器负责验收和导入。
+
+表结构选型依据固定依赖的 `external/ChuSQL/docs/types.md`、`docs/syntax.md`；本机对应上游文档为 `../ChuSQL/docs/`。字段与时间格式汇总见[数据库结构](database.md)。原教程 Astro 页面已删除并忽略，开发进度也不再硬编码在首页。

@@ -5,6 +5,8 @@ mod database;
 mod git_http;
 mod git_store;
 mod index;
+mod setup;
+mod starter;
 
 use anyhow::{Context, Result, ensure};
 use axum::{
@@ -50,6 +52,7 @@ struct App {
     data: PathBuf,
     repository: PathBuf,
     registration: bool,
+    setup_token: String,
     accounts: Mutex<accounts::Accounts>,
     hash_slots: Arc<Semaphore>,
     git_slots: Arc<Semaphore>,
@@ -198,6 +201,8 @@ fn router(app: Arc<App>) -> Router {
             "/api/health",
             get(|| async { Json(json!({"status": "ok"})) }),
         )
+        .route("/api/site", get(setup::site))
+        .route("/api/setup", post(setup::install))
         .route("/api/posts", get(posts))
         .route("/api/posts/{slug}", get(public_post))
         .route("/api/posts/{slug}/pages/{name}", get(page))
@@ -235,6 +240,9 @@ fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 async fn refresh(app: &App, source: &std::path::Path) -> Result<()> {
+    if let Err(error) = starter::ensure(app).await {
+        warn!(action = "starter_articles_pending", error = %error);
+    }
     let current = app.snapshot.read().await.clone();
     let identities = accounts::store(app).await.names().await?;
     let snapshot = git_store::import_authors(&app.data, source, &current, &identities).await?;
@@ -296,7 +304,7 @@ async fn main() -> Result<()> {
                 content::git(&repo, &["ls-tree", "-r", "--name-only", "HEAD"], None)
                     .await?
                     .is_empty(),
-                "检测到旧共享文章仓库，请先按 README 迁移到作者独立仓库"
+                "集合快照缺失且根缓存仓库非空，请检查数据目录"
             );
             Snapshot::default()
         }
@@ -311,20 +319,11 @@ async fn main() -> Result<()> {
         std::env::var("INGRESS_DIR").unwrap_or_else(|_| "/srv/ingress/authors".into()),
     );
     ensure!(source.is_absolute(), "INGRESS_DIR 必须是绝对路径");
-    let authorization_config = PathBuf::from(
-        std::env::var("CHUBLOG_AUTH_CONFIG")
-            .unwrap_or_else(|_| data.join("publishers.json").to_string_lossy().into_owned()),
-    );
-    let accounts = accounts::load(
-        &data,
-        &authorization_config,
-        source.clone(),
-        accounts_db::Store::from_env()?,
-    )
-    .await?;
+    let accounts = accounts::load(accounts_db::Store::from_env()?).await?;
     let app = Arc::new(App {
-        data,
+        data: data.clone(),
         repository: source.clone(),
+        setup_token: setup::load_token(&data).await?,
         registration: std::env::var("ALLOW_REGISTRATION").as_deref() == Ok("true"),
         accounts: Mutex::new(accounts),
         hash_slots: Arc::new(Semaphore::new(2)),
