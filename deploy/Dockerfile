@@ -71,18 +71,44 @@ COPY deploy/init-volumes.sh /usr/local/bin/init-volumes
 RUN chmod 755 /usr/local/bin/init-volumes
 ENTRYPOINT ["/usr/local/bin/init-volumes"]
 
-FROM ${DEBIAN_IMAGE} AS database
+FROM ${DEBIAN_IMAGE} AS database-runtime
 ARG DEBIAN_MIRROR=mirrors.tencentyun.com
 RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources
-RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 ca-certificates && rm -rf /var/lib/apt/lists/* && useradd -u 10003 -M -s /usr/sbin/nologin chusql
-COPY --from=database-build /out/chusql-server /out/csql-bootstrap /out/libchusql_core_storage.so /usr/local/bin/
-COPY --from=database-build /cli/ /usr/local/bin/
+RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 ca-certificates && rm -rf /var/lib/apt/lists/* && groupadd -g 10003 chusql && useradd -u 10003 -g chusql -M -s /usr/sbin/nologin chusql
 COPY deploy/chusql.toml /etc/chusql/settings.toml
 COPY deploy/chusql-cli.toml /etc/chusql/cli.toml
 COPY deploy/db-entrypoint.sh /usr/local/bin/db-entrypoint
 RUN chmod 755 /usr/local/bin/db-entrypoint
 ENV LD_LIBRARY_PATH=/usr/local/bin
+USER 10003:10003
+ENTRYPOINT ["/usr/local/bin/db-entrypoint"]
+
+FROM database-runtime AS database-source
+USER root
+COPY --from=database-build /out/chusql-server /out/csql-bootstrap /out/libchusql_core_storage.so /usr/local/bin/
+COPY --from=database-build /cli/ /usr/local/bin/
 RUN chusql-server --help && csql-bootstrap --help
 RUN if command -v csql >/dev/null 2>&1; then csql --help; fi
 USER 10003:10003
-ENTRYPOINT ["/usr/local/bin/db-entrypoint"]
+
+FROM database-runtime AS database
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/install-chusql.sh /usr/local/bin/install-chusql
+RUN rm /etc/chusql/settings.toml && sh /usr/local/bin/install-chusql
+COPY deploy/chusql.toml /etc/chusql/settings.toml
+ENV LD_LIBRARY_PATH=/usr/lib/chusql/bin
+RUN chusql-server --help && csql-bootstrap --help && csql --help
+USER 10003:10003
+
+FROM database-runtime AS database-script
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends curl python3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/install-chusql-remote.sh /usr/local/bin/install-chusql-remote
+RUN rm /etc/chusql/settings.toml && sh /usr/local/bin/install-chusql-remote
+COPY deploy/chusql.toml /etc/chusql/settings.toml
+ENV PATH=/usr/lib/chusql/bin:$PATH LD_LIBRARY_PATH=/usr/lib/chusql/bin
+RUN chusql-server --help && csql-bootstrap --help && csql --help
+USER 10003:10003

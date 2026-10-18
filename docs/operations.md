@@ -6,43 +6,32 @@
 
 | 卷 | 内容 |
 | --- | --- |
-| content | 作者 Git 缓存、collection.json、published.json、setup-token |
-| ingress | 作者接收仓库 authors/用户名.git |
-| database | 账户、权限、网站设置、安装记录和文章索引 |
+| content | 文章快照、管理设置和安装密钥 |
+| ingress | 作者 Git 仓库 |
+| database | 账户、权限、网站设置和文章索引 |
 | db-logs | 数据库日志 |
-
-应用日志输出 stdout，由 Docker 轮换保存。安装和数据库初始化见[部署文档](deployment.md)，表结构见[数据库文档](database.md)。
 
 ## 备份与恢复
 
-备份流程是停止写入，再保存 `.env` 和以上持久卷的一致副本。备份包含数据库口令及密码哈希，应加密并限制访问。恢复流程是停止服务、恢复同一批备份，再启动并核对账户、权限、文章和系统时间。
+停止服务后，备份 `.env` 和全部持久卷。备份包含口令和账户信息，应加密并限制访问。
 
-`collection.json` 保存生效版本、暂存状态、原始系统时间、管理员精华与可见性设置、审核封禁状态和查阅口令哈希，需要完整保留。Git 可以恢复有效正文，系统时间、管理设置及错误索引前的生效版本依赖快照备份。仅恢复作者 Git 会丢失管理限制，可能使原本受限或已删除的已发布文章重新公开。默认卸载保留数据卷，`--purge` 永久删除项目数据。
+恢复时停止服务，恢复同一批备份，再启动并检查账户、权限和文章。仅恢复 Git 仓库会丢失管理设置和授权，可能使受限文章重新公开。默认卸载保留数据，`--purge` 永久删除数据卷。
 
-`blog_site.starter_commit` 记录内置文章首次释放状态。保留该字段可继续维护或撤回两篇文章；值为 NULL 时后台重试，遇到已有其他内容时保留仓库并报告冲突。管理员账户和安装记录应一并恢复。
+## 故障处理
 
-## 数据库故障与索引
+先查看服务状态和日志：
 
-数据库故障时，账户和 Git 认证返回失败，已导入公共文章继续通过快照阅读。服务恢复后自动重试同步；索引失败至少间隔 30 秒再试。文章策略投影失败会保留待同步标记，后台独立重试，连续失败的重试间隔为 30 秒，无需新推送或重启。文件和内存设置可能已生效，即使此次请求因数据库投影失败返回错误。进程重启会清空内存会话，用户重新登录即可。
+```sh
+docker compose --env-file .env -f deploy/compose.yaml ps
+docker compose --env-file .env -f deploy/compose.yaml logs --tail 100 api db
+```
 
-`/api/admin/status` 中 indexed_commit 为 null 表示等待确认索引，值落后于 commit 表示同步中。在线同步可以自动重建派生索引；手动重建时先停止占用同一数据卷的 API，再运行 `chublog-api rebuild-index`。
+数据库故障时，登录和发布会失败，已导入的公共文章仍可阅读。数据库恢复后自动重试同步。API 重启后，用户需要重新登录。
 
-重建范围为 blog_posts、blog_tags、blog_articles、blog_pages、blog_article_tags，账户和安装记录由数据库备份恢复。文件原子写入、fsync 和 Git 引用更新提供写入保护，磁盘故障及备份恢复仍需在实际环境演练。
+管理员可通过 `/api/admin/status` 查看同步状态。需要手动重建文章索引时，先停止使用同一数据卷的 API，再运行 `chublog-api rebuild-index`。索引重建不能恢复账户和授权，应从备份恢复。
+
+安装冲突或表结构错误时，先检查日志并备份数据。不要直接清空已有数据库。进程或内存不足时，可运行 `docker stats --no-stream` 检查资源。
 
 ## 数据库 CLI
 
-安装与连接方法见[可选数据库 CLI](deployment.md#可选安装数据库-cli)。CLI 通过容器内回环地址连接，数据库端口使用内部网络。
-
-## 安装错误定位
-
-账户接口按原因区分连接、权限、凭据、表结构和数据校验错误。安装要求空账户表，已有账户与安装状态冲突时返回 409。部署阶段会校验 nickname 等必需字段，便于在服务启动前发现表结构差异。
-
-查看安装请求附近的日志：
-
-```sh
-docker compose --env-file .env -f deploy/compose.yaml logs --tail 80 api
-```
-
-错误记录包含 reason 分类和 operation 阶段，例如 create_account、record_installation、commit_transaction。数据库结构以独立 SQL 文件为准，现有数据处理前先完成备份。
-
-安装后的公开网站信息缓存在 API 内存中，重启后从 ChuSQL 重新读取；账户与发布权限仍在使用时查询数据库。Git 子进程失败会记录退出码及经过凭据遮盖的错误输出。出现 cannot fork() 时，可用 `docker stats --no-stream` 检查 PIDS 和内存占用。
+连接方法见[可选数据库 CLI](deployment.md#可选安装数据库-cli)。

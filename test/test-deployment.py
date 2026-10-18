@@ -73,7 +73,8 @@ if kind == 'git' and args[:2] == ['status', '--porcelain']:
             self.assertEqual(calls[0], ['fetch'])
             actions = [call for call in calls if call[0] == 'docker']
             self.assertIn('build', actions[0])
-            self.assertTrue({'api', 'db', 'web'}.issubset(actions[0]))
+            self.assertTrue({'api', 'web'}.issubset(actions[0]))
+            self.assertEqual(actions.pop(1)[-2:], ['build', 'db'])
             self.assertEqual(actions[1][-2:], ['stop', 'api'])
             self.assertEqual(actions[2][-5:], ['up', '-d', '--no-build', '--remove-orphans', 'db'])
             self.assertIn('provision-db', actions[3])

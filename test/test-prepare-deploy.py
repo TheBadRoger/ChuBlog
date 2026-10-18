@@ -40,7 +40,7 @@ class PrepareDeployment(unittest.TestCase):
             call = json.loads(log.read_text())
             self.assertEqual(call[:3], ['compose', '--env-file', str(root / '.env.example')])
             self.assertIn('db', call)
-            self.assertIn('web', call)
+            self.assertEqual(call[-1], 'db')
             self.assertFalse((root / 'deploy/bin').exists())
             override = root / 'public sources.env'
             override.write_text('REGISTRY_PREFIX=public.ecr.aws/docker/library/\n')
@@ -52,6 +52,23 @@ class PrepareDeployment(unittest.TestCase):
             result = subprocess.run(command, env={**env, 'DOCKER_EXIT': '17'}, capture_output=True, text=True)
             self.assertEqual(result.returncode, 17)
             self.assertEqual(json.loads(log.read_text())[2], str(root / '.env'))
+            (root / 'scripts/fetch-deps.py').write_text(
+                'import os, sys\nfrom pathlib import Path\n'
+                'Path(os.environ["FETCH_LOG"]).write_text(" ".join(sys.argv[1:]))\n')
+            docker.write_text(f'#!{sys.executable}\nimport json, os, sys\n'
+                              'from pathlib import Path\n'
+                              'target = os.environ.get("CHUSQL_BUILD_TARGET", "")\n'
+                              'with Path(os.environ["CALL_LOG"]).open("a") as log:\n'
+                              '    log.write(json.dumps([target, sys.argv[-1]]) + "\\n")\n'
+                              'sys.exit(17 if target in ["database", "database-script"] else 0)\n')
+            log.write_text('')
+            fetch_log = root / 'fetch.log'
+            result = subprocess.run(command, env={**env, 'FETCH_LOG': str(fetch_log)},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(fetch_log.read_text(), '--only ChuSQL')
+            self.assertEqual([json.loads(line) for line in log.read_text().splitlines()][-3:],
+                             [['database', 'db'], ['database-script', 'db'], ['database-source', 'db']])
             docker.unlink()
             result = subprocess.run(command, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)

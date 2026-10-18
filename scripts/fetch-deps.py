@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Initialize pinned dependencies over GitHub HTTPS with a self-hosted HTTPS fallback."""
+"""Initialize pinned dependencies using ordered repository fallbacks."""
 import argparse
 import os
 from pathlib import Path
@@ -34,8 +34,11 @@ def initialize(name, override):
             raise RuntimeError(f'Local repository does not exist: {source}')
         sources = [source.as_uri()]
     else:
-        sources = [f'https://github.com/TheBadRoger/{name}.git',
-                   f'https://repo.chunana.cn/ChuNa7a/{name}.git']
+        sources = ([f'http://127.0.0.1:3000/ChuNa7a/{name}.git',
+                    f'http://repo.chunana.cn/ChuNa7a/{name}.git',
+                    f'https://github.com/TheBadRoger/{name}.git'] if name == 'ChuSQL' else
+                   [f'https://github.com/TheBadRoger/{name}.git',
+                    f'https://repo.chunana.cn/ChuNa7a/{name}.git'])
     transport_env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0'}
     for url in sources:
         print(f'{name}: trying {url}', flush=True)
@@ -59,9 +62,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--database-repo', type=Path, help='explicit local development source for ChuSQL')
     parser.add_argument('--driver-repo', type=Path, help='explicit local development source for the driver')
+    parser.add_argument('--only', choices=PROJECTS, help='fetch only this dependency')
     args = parser.parse_args()
     for name, override in zip(PROJECTS, [args.database_repo, args.driver_repo]):
-        initialize(name, override)
+        if not args.only or args.only == name:
+            initialize(name, override)
 
 
 if __name__ == '__main__':

@@ -83,7 +83,8 @@ services:
   db:
     build:
       <<: *backend-build
-      target: database
+      target: ${CHUSQL_BUILD_TARGET:-database}
+      network: host
       args:
         <<: *backend-build-args
         CHUSQL_WITH_CLI: ${CHUSQL_WITH_CLI:-false}

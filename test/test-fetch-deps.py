@@ -74,12 +74,12 @@ class InitializeDependencies(unittest.TestCase):
                 partial_env[f'GIT_CONFIG_KEY_{i}'] = f'url.{empty_source.as_uri()}.insteadOf'
                 partial_env[f'GIT_CONFIG_VALUE_{i}'] = f'https://github.com/TheBadRoger/{name}.git'
                 partial_env[f'GIT_CONFIG_KEY_{i + 2}'] = f'url.{Path(source).as_uri()}.insteadOf'
-                partial_env[f'GIT_CONFIG_VALUE_{i + 2}'] = f'https://repo.chunana.cn/ChuNa7a/{name}.git'
+                partial_env[f'GIT_CONFIG_VALUE_{i + 2}'] = (f'http://repo.chunana.cn/ChuNa7a/{name}.git' if name == 'ChuSQL' else f'https://repo.chunana.cn/ChuNa7a/{name}.git')
             result = subprocess.run(['python3', 'scripts/fetch-deps.py'], cwd=partial, env=partial_env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             for name in ['ChuSQL', 'ChuSQL-RustDriver']:
                 self.assertEqual((partial / f'external/{name}/source.txt').read_text(), f'{name} committed source')
-                self.assertEqual(git(partial / f'external/{name}', 'config', '--get', 'remote.origin.url'), f'https://repo.chunana.cn/ChuNa7a/{name}.git')
+                self.assertEqual(git(partial / f'external/{name}', 'config', '--get', 'remote.origin.url'), (f'http://repo.chunana.cn/ChuNa7a/{name}.git' if name == 'ChuSQL' else f'https://repo.chunana.cn/ChuNa7a/{name}.git'))
             # Running the initialization a second time must preserve the same pins.
             subprocess.run(['python3', 'scripts/fetch-deps.py', '--database-repo', sources[0], '--driver-repo', sources[1]], cwd=project, env=env, check=True, capture_output=True)
 

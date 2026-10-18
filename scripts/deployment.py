@@ -97,7 +97,7 @@ def compose_command(args, envfile):
 def deploy(args):
     configure(args.env_file)
     print('获取固定版本的外部依赖…', flush=True)
-    run([sys.executable, str(ROOT / 'scripts/fetch-deps.py')])
+    run([sys.executable, str(ROOT / 'scripts/fetch-deps.py'), '--only', 'ChuSQL-RustDriver'])
     print('在 Docker 内构建生产镜像…', flush=True)
     build = [sys.executable, str(ROOT / 'scripts/prepare-deploy.py'),
              '--env-file', str(args.env_file), '--project-name', args.project_name]

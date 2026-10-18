@@ -1,6 +1,6 @@
 # ChuBlog
 
-使用 Astro + TypeScript、Rust/Axum 和 ChuSQL 的个人博客。文章通过作者独立的 HTTPS Git 仓库发布，`index.toml` 管理文章元信息和多页正文。账户、权限及网站设置保存在 ChuSQL。管理员可设置精华、文章可见性和查阅口令，并将文章下架。
+使用 Astro、Rust 和 ChuSQL 的个人博客，支持 Git 发布、多页文章和访问权限管理。
 
 ## 快速开始
 
@@ -38,13 +38,7 @@
 
 安装完成后，首页提供导航，管理员仓库自动发布“发文章教程”和“开发进度”。登录管理员账户即可授权作者，作者从账户页获取个人仓库地址。
 
-更新使用 `scripts/update.sh`，卸载使用 `scripts/uninstall.sh`。可选数据库客户端通过 `scripts/deploy.sh --with-cli` 安装。配置、代理和完整命令见[部署文档](docs/deployment.md)。
-
-## 项目进度
-
-已实现安装与数据库账户、作者独立 Git 发布、多页阅读、四档可见性、半/全隐藏、管理员审核封禁、口令与指定用户持久授权，以及精华筛选。前端支持搜索、标签、分页、暗色模式和代码高亮。
-
-本地隔离 ChuSQL 的完整串行测试 40 项通过，前端 10 项测试、构建和 Clippy 通过。浏览器与真实 HTTPS 部署联调仍待验证。评论、互动统计、热度推荐和发布审核仍待实现，详见[项目进度](docs/progress.md)。
+更新使用 `scripts/update.sh`，卸载使用 `scripts/uninstall.sh`。配置、代理和完整命令见[部署文档](docs/deployment.md)。
 
 ## 文档
 
@@ -60,4 +54,4 @@
 | [开发](docs/development.md) | 依赖、源码检查和联调 |
 | [前端](docs/frontend.md) | 页面与本地开发 |
 
-源码：[GitHub](https://github.com/TheBadRoger/ChuBlog.git) · [自建仓库](https://repo.chunana.cn/ChuNa7a/ChuBlog.git)
+源码：[GitHub](https://github.com/TheBadRoger/ChuBlog.git)，[自建仓库](https://repo.chunana.cn/ChuNa7a/ChuBlog.git)

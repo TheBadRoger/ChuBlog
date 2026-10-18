@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
@@ -16,7 +17,7 @@ parser.add_argument('--with-cli', action='store_true', help='build and install t
 args = parser.parse_args()
 if shutil.which('docker') is None:
     parser.error('Docker with the Compose plugin is required; see docs/deployment.md.')
-for manifest in ['external/ChuSQL-RustDriver/Cargo.toml', 'external/ChuSQL/chusql-core/storage/Cargo.toml']:
+for manifest in ['external/ChuSQL-RustDriver/Cargo.toml']:
     if not (root / manifest).is_file():
         parser.error('Initialize external dependencies with python3 scripts/fetch-deps.py first.')
 envfile = args.env_file or (root / '.env' if (root / '.env').is_file() else root / '.env.example')
@@ -31,7 +32,7 @@ if args.project_name:
     command.extend(['-p', args.project_name])
 command.extend([
     '-f', str(root / 'deploy/compose.yaml'),
-    'build', 'init', 'api', 'db', 'db-init', 'web',
+    'build',
 ])
 # Build-only parsing needs values even before deploy.sh creates runtime credentials.
 build_env = os.environ.copy()
@@ -39,7 +40,18 @@ build_env['CHUSQL_WITH_CLI'] = 'true' if args.with_cli else 'false'
 for key in ['CHUSQL_ROOT_PASSWORD', 'CHUSQL_PASSWORD']:
     build_env[key] = build_env.get(key) or 'unused-build-placeholder'
 try:
-    subprocess.run(command, cwd=root, check=True, env=build_env)
+    subprocess.run(command + ['init', 'api', 'db-init', 'web'], cwd=root, check=True, env=build_env)
+    for target in ['database', 'database-script', 'database-source']:
+        if target == 'database-source':
+            print('ChuSQL 发行包安装失败，获取固定版本源码并在 Docker 内构建。', flush=True)
+            subprocess.run([sys.executable, str(root / 'scripts/fetch-deps.py'), '--only', 'ChuSQL'],
+                           cwd=root, check=True)
+        build_env['CHUSQL_BUILD_TARGET'] = target
+        result = subprocess.run(command + ['db'], cwd=root, env=build_env)
+        if result.returncode == 0:
+            break
+    else:
+        raise subprocess.CalledProcessError(result.returncode, command + ['db'])
 except subprocess.CalledProcessError as error:
     raise SystemExit(error.returncode) from None
 print('Deployment images built inside Docker. No host binaries were created.')
