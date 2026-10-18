@@ -1,0 +1,45 @@
+---
+import Base from '../../layouts/Base.astro';
+import { readSession } from '../../lib/session';
+const session = await readSession(Astro);
+if (session.status === 'anonymous') return Astro.redirect('/login');
+const unavailable = session.status === 'unavailable';
+const role = session.status === 'authenticated' ? session.account.permissions.role : null;
+const allowed = role === 'publisher' || role === 'admin';
+if (!allowed) Astro.response.status = unavailable ? 503 : 403;
+---
+<Base title="文章管理">
+  <div class="account-shell admin-shell" data-requires-role="publisher">
+    {allowed ? <>
+      <header class="page-heading"><h1>文章管理</h1><p>{role === 'admin' ? '审核用户文章，管理文章的开放与封禁状态。' : '管理自己的文章设置，查看暂存的索引。'}</p></header>
+      {role === 'publisher' ? <>
+        <section id="my-articles-section" class="settings-section" aria-labelledby="my-articles-heading">
+          <h2 id="my-articles-heading">个人文章管理</h2>
+          <p>设置自己文章的可见性、隐藏等级和查阅口令；绝密文章可以指定可见用户。隐藏等级仅作者可设置，封禁的文章对外显示为已删除，修改正文并重新推送后自动开放。</p>
+          <p id="my-articles-status" class="form-status" role="status">正在读取文章…</p>
+          <div id="my-articles"></div>
+        </section>
+        <section class="settings-section" aria-labelledby="my-pending-heading">
+          <h2 id="my-pending-heading">暂存的索引</h2>
+          <p>推送成功但暂时无法导入的文章会在这里显示原因，修复后再次推送即可。</p>
+          <p id="my-pending-status" class="form-status" role="status" data-loading="true">正在读取同步状态…</p>
+          <div id="my-pending-indexes" aria-busy="true"></div>
+        </section>
+      </> : <>
+        <section id="admin-articles-section" class="settings-section" aria-labelledby="articles-heading">
+          <h2 id="articles-heading">用户文章管理</h2>
+          <p>可见性分为默认、秘密、机密、绝密四档；封禁后对外显示为已删除，作者修改并推送后会自动重新开放。隐藏等级仅作者可设置。</p>
+          <p id="articles-status" class="form-status" role="status">正在读取文章…</p>
+          <div id="admin-articles"></div>
+        </section>
+        <section class="settings-section" aria-labelledby="pending-heading">
+          <h2 id="pending-heading">暂存的索引</h2>
+          <p>作者推送成功但暂时无法导入的文章会在这里显示原因。</p>
+          <p id="pending-status" class="form-status" role="status" data-loading="true">正在读取同步状态…</p>
+          <div id="pending-indexes" aria-busy="true"></div>
+        </section>
+      </>}
+      <noscript><p class="notice">文章管理需要启用 JavaScript。</p></noscript>
+    </> : <div class="empty-state"><h1>{unavailable ? '暂时无法验证权限' : '需要作者权限'}</h1><p>{unavailable ? '请稍后重试。' : '此页面仅向作者和管理员开放。'}</p><a class="text-link" href={unavailable ? '/admin/articles' : '/'}>{unavailable ? '重新加载' : '返回首页'}</a></div>}
+  </div>
+</Base>

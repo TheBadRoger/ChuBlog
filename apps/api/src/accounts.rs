@@ -86,7 +86,7 @@ pub(crate) fn nickname(value: &str) -> Result<()> {
     );
     Ok(())
 }
-fn password(value: &str) -> Result<()> {
+pub(crate) fn password(value: &str) -> Result<()> {
     ensure!(
         (6..=128).contains(&value.chars().count()),
         "密码需要 6–128 个字符"
@@ -538,47 +538,39 @@ pub async fn git_credentials(app: &App, name: &str, secret: String) -> ApiResult
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn password_limits_count_unicode_characters() {
-        for value in [
-            "123456".to_owned(),
-            "a".repeat(128),
-            "密".repeat(6),
-            "😺".repeat(128),
-        ] {
-            assert!(password(&value).is_ok());
-        }
-        for value in ["short".to_owned(), "a".repeat(129), "😺".repeat(129)] {
-            assert!(password(&value).is_err());
-        }
+#[path = "../../../test/api/accounts.rs"]
+mod tests;
+
+pub async fn unlock_article(
+    app: &App,
+    user_id: i64,
+    key: &str,
+    hash: &str,
+    password: String,
+) -> ApiResult<()> {
+    use argon2::{Argon2, PasswordHash, PasswordVerifier};
+    let _slot = app
+        .hash_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError(StatusCode::TOO_MANY_REQUESTS, "请稍后重试".into()))?;
+    let encoded = hash.to_owned();
+    let valid = tokio::task::spawn_blocking(move || {
+        PasswordHash::new(&encoded).ok().is_some_and(|h| {
+            Argon2::default()
+                .verify_password(password.as_bytes(), &h)
+                .is_ok()
+        })
+    })
+    .await
+    .map_err(internal)?;
+    if !valid {
+        return Err(ApiError(StatusCode::FORBIDDEN, "查阅口令错误".into()));
     }
-    #[test]
-    fn database_errors_report_safe_categories_instead_of_one_outage_message() {
-        for (code, detail, expected) in [
-            ("forbidden", "administrator required", "权限配置异常"),
-            (
-                "unauthorized",
-                "secret credential detail",
-                "连接凭据校验失败",
-            ),
-            (
-                "query_error",
-                "unknown column: nickname",
-                "结构与当前版本不一致",
-            ),
-        ] {
-            let error = database_error(crate::accounts_db::Error::Database(
-                chusql_driver::Error::Server {
-                    code: code.into(),
-                    message: detail.into(),
-                }
-                .into(),
-            ));
-            assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
-            assert!(error.1.contains(expected));
-            assert!(!error.1.contains(detail));
-        }
-    }
+    let store = app.accounts.lock().await.store.clone();
+    store
+        .grant_article_access(user_id, key, crate::accounts_db::AccessSource::Password)
+        .await
+        .map_err(crate::accounts::database_error)?;
+    Ok(())
 }

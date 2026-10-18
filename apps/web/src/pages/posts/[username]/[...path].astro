@@ -1,0 +1,84 @@
+---
+import Base from '../../../layouts/Base.astro';
+import { ApiError, readApi, pageUrl, displayDate, type Article, type LockedBody } from '../../../lib/api';
+import { renderMarkdown } from '../../../lib/markdown';
+const username = Astro.params.username || '';
+const path = Astro.params.path || '';
+const segments = path.split('/');
+const [id] = segments;
+const page = Astro.url.searchParams.get('page');
+let name: string | undefined;
+const slug = `${username}~${id}`;
+let article: Article | undefined;
+let missing = false;
+let removed = false;
+let accessStatus = 0;
+let locked: LockedBody | null = null;
+const headers = { Cookie: Astro.request.headers.get('cookie') || '' };
+try {
+  if (segments.length !== 1 || !/^[a-z_-][a-z0-9_-]{2,31}$/.test(username) || !/^[a-z0-9-]+$/.test(id || '') || Astro.url.searchParams.getAll('page').length > 1 || (page !== null && !/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/.test(page))) throw new ApiError(404);
+  article = await readApi<Article>(`/api/posts/${encodeURIComponent(slug)}`, headers);
+  if (page !== null) {
+    const document = article.pages.find((document) => document.name.replace(/\.(md|markdown|txt)$/, '') === page);
+    if (!document) throw new ApiError(404);
+    name = document.name;
+    if (name === (article.entry || 'main.md')) return Astro.redirect(pageUrl(slug, name, article.entry), 302);
+    article = await readApi<Article>(`/api/posts/${encodeURIComponent(slug)}/pages/${encodeURIComponent(name)}`, headers);
+  }
+} catch (error) {
+  article = undefined;
+  removed = error instanceof ApiError && error.status === 404 && (error.body as { error?: string } | null)?.error === '文章已删除';
+  missing = error instanceof ApiError && error.status === 404 && !removed;
+  accessStatus = error instanceof ApiError ? error.status : 503;
+  locked = error instanceof ApiError ? error.locked : null;
+  Astro.response.status = [401, 403, 404].includes(accessStatus) ? accessStatus : 503;
+}
+let html = '';
+if (article?.format === 'markdown') html = renderMarkdown(article, slug);
+const currentPage = name || article?.entry;
+const lockedMeta = locked?.meta ?? null;
+const lockedReason = locked?.reason ?? (accessStatus === 401 ? 'login' : 'denied');
+const title = article?.meta.title || (lockedReason === 'password' ? '需要口令' : lockedReason === 'denied' ? '无权访问' : lockedReason === 'login' ? '请登录阅读' : removed ? '文章已删除' : missing ? '文章不存在' : '暂时无法读取');
+const visibilityLabel = article?.meta.visibility === 'secret' ? '秘密文章' : article?.meta.visibility === 'confidential' ? '机密文章' : article?.meta.visibility === 'top' ? '绝密文章' : '';
+---
+<Base title={title} description={article?.meta.description}>
+  {article ? <div class="reading-shell">
+    <a class="back-link" href="/articles">返回文章</a>
+    <header class="article-heading">
+      <div class="article-meta"><span>{article.meta.author_name}{article.meta.author_is_admin && <small class="author-badge">管理员</small>}</span><time datetime={article.meta.date}>{displayDate(article.meta.date)}</time></div>
+      <h1>{article.meta.title}</h1>{article.meta.featured && <small class="author-badge">精华</small>}{visibilityLabel && <small class="author-badge">{visibilityLabel}</small>}
+      {article.meta.description && <p class="article-description">{article.meta.description}</p>}
+      {article.meta.tags.length > 0 && <div class="article-tags">{article.meta.tags.map((tag) => <a href={`/articles?tag=${encodeURIComponent(tag)}`}>{tag}</a>)}</div>}
+    </header>
+    {article.pages.length > 1 && <nav class="document-nav" aria-label="文章页面">{article.pages.map((page) => <a href={pageUrl(slug, page.name, article.entry)} aria-current={page.name === currentPage ? 'page' : undefined}>{page.name === (article.entry || 'main.md') ? '正文' : page.name.replace(/\.(md|markdown|txt)$/, '').replace(/[-_]/g, ' ')}</a>)}</nav>}
+    {article.format === 'text' ? <pre class="plain-text">{article.markdown}</pre> : <div class="prose" set:html={html} />}
+    <footer class="article-end"><p>最后修改于 <time datetime={article.meta.updated}>{displayDate(article.meta.updated)}</time></p><a class="text-link" href="/articles">查看其他文章</a></footer>
+  </div> : removed ? <div class="empty-state page-shell"><h1>文章已删除</h1><p>这篇文章已被管理员删除。</p><a class="text-link" href="/articles">返回文章列表</a></div>
+  : missing ? <div class="empty-state page-shell"><h1>文章不存在</h1><p>文章可能已撤回，或尚未公开。</p><a class="text-link" href="/articles">返回文章列表</a></div>
+  : locked ? <div class="locked-page">
+    <div class="locked-backdrop" aria-hidden="true">
+      {lockedMeta ? <div class="locked-preview">
+        <p class="locked-kicker">受限文章</p>
+        <h1>{lockedMeta.title}</h1>
+        <p class="locked-byline">{lockedMeta.author_name} · {displayDate(lockedMeta.date)}</p>
+        {lockedMeta.description && <p>{lockedMeta.description}</p>}
+        <div class="locked-lines">{Array.from({ length: 7 }, (_, index) => <span style={`width:${[92, 78, 86, 64, 90, 73, 46][index]}%`} />)}</div>
+      </div> : <div class="locked-preview">
+        <div class="locked-lines">{Array.from({ length: 10 }, (_, index) => <span style={`width:${[88, 72, 94, 61, 83, 90, 55, 76, 68, 42][index]}%`} />)}</div>
+      </div>}
+    </div>
+    <div class="locked-foreground" role="dialog" aria-modal="true" aria-labelledby="locked-title">
+      <div class="lock-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/><circle cx="12" cy="15.5" r="1.2" fill="currentColor" stroke="none"/><path d="M12 16.7v1.8"/></svg></div>
+      {lockedMeta && <p class="locked-article">{lockedMeta.title}</p>}
+      <h1 id="locked-title">{lockedReason === 'password' ? '需要口令才可访问' : lockedReason === 'denied' ? '无权访问' : '请登录后访问'}</h1>
+      <p class="locked-note">{lockedReason === 'password' ? '这篇文章受到口令保护。输入正确的查阅口令后即可阅读。' : lockedReason === 'denied' ? '这篇文章仅向获得许可的读者开放。' : '这篇文章仅向登录用户开放，请先登录。'}</p>
+      {lockedReason === 'password' ? <form id="article-unlock-form" data-slug={slug} class="locked-form">
+        <label class="sr-only" for="article-password">查阅口令</label>
+        <input id="article-password" name="password" type="password" required minlength="6" maxlength="128" autocomplete="off" placeholder="输入查阅口令" />
+        <button class="button" type="submit">查阅文章</button>
+        <p class="form-status" role="status"></p>
+      </form> : <a class="button" href={lockedReason === 'login' ? '/login' : '/articles'}>{lockedReason === 'login' ? '前往登录' : '返回文章列表'}</a>}
+    </div>
+  </div>
+  : <div class="empty-state page-shell"><h1>暂时无法读取文章</h1><p>请稍后重试。</p><a class="text-link" href="/articles">返回文章列表</a></div>}
+</Base>

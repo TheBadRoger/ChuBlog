@@ -1,6 +1,8 @@
 import { defineMiddleware } from 'astro:middleware';
+import { readSession } from './lib/session';
 
-export const onRequest = defineMiddleware(async (_context, next) => {
+export const onRequest = defineMiddleware(async (context, next) => {
+  if (context.request.headers.get('accept')?.includes('text/html')) void readSession(context);
   const response = await next();
   response.headers.set('Cache-Control', 'no-store');
   response.headers.set('X-Content-Type-Options', 'nosniff');

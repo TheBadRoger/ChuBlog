@@ -80,6 +80,155 @@ pub struct Snapshot {
     pub revisions: BTreeMap<String, String>,
     #[serde(default)]
     pub pending: BTreeMap<String, PendingIndex>,
+    #[serde(default)]
+    pub policies: BTreeMap<String, ArticlePolicy>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    #[default]
+    #[serde(alias = "public")]
+    Default,
+    #[serde(alias = "internal")]
+    Secret,
+    Confidential,
+    #[serde(alias = "hidden")]
+    Top,
+}
+
+impl Visibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "DEFAULT",
+            Self::Secret => "SECRET",
+            Self::Confidential => "CONFIDENTIAL",
+            Self::Top => "TOP",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Hidden {
+    Semi,
+    #[default]
+    Full,
+}
+
+impl Hidden {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Semi => "SEMI",
+            Self::Full => "FULL",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Review {
+    #[default]
+    Open,
+    Blocked,
+}
+
+impl Review {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "OPEN",
+            Self::Blocked => "BLOCKED",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+pub struct ArticlePolicy {
+    pub featured: bool,
+    pub visibility: Visibility,
+    pub hidden: Hidden,
+    pub review: Review,
+    pub blocked_hash: Option<String>,
+    pub password_hash: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ArticlePolicy {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            #[serde(default)]
+            featured: bool,
+            #[serde(default)]
+            visibility: Visibility,
+            #[serde(default)]
+            hidden: Hidden,
+            #[serde(default)]
+            review: Review,
+            #[serde(default)]
+            blocked_hash: Option<String>,
+            #[serde(default)]
+            password_hash: Option<String>,
+            #[serde(default)]
+            deleted: bool,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        // Legacy policies used `internal` plus a password for what is now CONFIDENTIAL.
+        let legacy_password = wire.visibility == Visibility::Secret && wire.password_hash.is_some();
+        let visibility = if legacy_password {
+            Visibility::Confidential
+        } else {
+            wire.visibility
+        };
+        let hidden = if legacy_password || visibility == Visibility::Confidential {
+            Hidden::Full
+        } else {
+            wire.hidden
+        };
+        Ok(Self {
+            featured: wire.featured,
+            visibility,
+            hidden,
+            review: if wire.deleted {
+                Review::Blocked
+            } else {
+                wire.review
+            },
+            blocked_hash: wire.blocked_hash,
+            password_hash: wire.password_hash,
+        })
+    }
+}
+
+impl Snapshot {
+    pub fn is_public(&self, post: &Post) -> bool {
+        post.meta.status == Status::Published
+            && self
+                .policies
+                .get(&post.meta.slug)
+                .is_none_or(|p| p.review == Review::Open && p.visibility == Visibility::Default)
+    }
+}
+
+/// Stable content hash used to decide whether a blocked article changed.
+pub async fn post_hash(repo: &Path, post: &Post) -> Result<String> {
+    let bytes = serde_json::to_vec(&(
+        &post.meta.title,
+        &post.meta.description,
+        &post.meta.tags,
+        &post.meta.cover,
+        &post.meta.status,
+        &post.path,
+        &post.format,
+        &post.entry,
+        &post.markdown,
+        &post.pages,
+        &post.assets,
+    ))?;
+    let hash = git(repo, &["hash-object", "--stdin"], Some(bytes.as_slice())).await?;
+    Ok(String::from_utf8(hash)?.trim().to_owned())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -339,12 +488,7 @@ pub fn manifest(text: &str) -> Result<Vec<ManifestEntry>> {
             article.id.len() <= 40 && ids.insert(&article.id),
             "文章 ID 过长或重复"
         );
-        slug(
-            article
-                .folder
-                .strip_prefix("posts/")
-                .context("文章目录必须位于 posts 下")?,
-        )?;
+        directory(&article.folder)?;
         ensure!(folders.insert(&article.folder), "文章目录不能重复映射");
         filename(&article.entry)?;
         ensure!(
@@ -378,6 +522,22 @@ pub fn manifest(text: &str) -> Result<Vec<ManifestEntry>> {
         }
     }
     Ok(index.articles)
+}
+
+fn directory(path: &str) -> Result<()> {
+    ensure!(
+        !path.is_empty() && path.len() <= 91 && !path.contains(['\\', ':']),
+        "文章目录需要相对路径，最多 91 个 UTF-8 字节"
+    );
+    let parts: Vec<_> = path.split('/').collect();
+    ensure!(
+        parts.len() <= 16
+            && parts.iter().all(|part| !part.is_empty()
+                && !part.starts_with('.')
+                && !part.chars().any(char::is_control)),
+        "文章目录含有隐藏、越界或无效路径段"
+    );
+    validate_text(path)
 }
 
 fn filename(name: &str) -> Result<()> {
@@ -431,15 +591,11 @@ pub async fn scan_at(repo: &Path, commit: &str) -> Result<Scan> {
             info.len() == 3 && info[0] == "100644" && info[1] == "blob",
             "禁止符号链接及特殊文件"
         );
-        let parts: Vec<_> = path.split('/').collect();
         let is_index = path == "index.toml";
+        let (folder_path, file_name) = path.rsplit_once('/').unwrap_or((".", path));
         if !is_index {
-            ensure!(
-                parts.len() == 3 && parts[0] == "posts",
-                "仅允许 index.toml 和 posts/文件夹/文件"
-            );
-            slug(parts[1])?;
-            filename(parts[2])?;
+            directory(folder_path)?;
+            filename(file_name)?;
         }
         let extension = path.rsplit('.').next().unwrap_or("");
         let text_file = matches!(extension, "txt" | "md" | "markdown");
@@ -469,7 +625,7 @@ pub async fn scan_at(repo: &Path, commit: &str) -> Result<Scan> {
             index = Some(text);
             continue;
         }
-        let folder = grouped.entry(format!("posts/{}", parts[1])).or_default();
+        let folder = grouped.entry(folder_path.to_owned()).or_default();
         folder.bytes += bytes.len();
         ensure!(folder.bytes <= 6 * 1024 * 1024, "文章目录不得超过 6 MiB");
         if text_file {
@@ -477,10 +633,10 @@ pub async fn scan_at(repo: &Path, commit: &str) -> Result<Scan> {
             validate_text(&text)?;
             folder
                 .texts
-                .insert(parts[2].into(), text.replace("\r\n", "\n"));
+                .insert(file_name.into(), text.replace("\r\n", "\n"));
         } else {
             let asset = Asset {
-                name: parts[2].into(),
+                name: file_name.into(),
                 data: STANDARD.encode(bytes),
             };
             decode_asset(&asset)?;
@@ -512,6 +668,7 @@ pub async fn scan_at(repo: &Path, commit: &str) -> Result<Scan> {
             posts,
             revisions: BTreeMap::new(),
             pending: BTreeMap::new(),
+            policies: BTreeMap::new(),
         })),
         Err(error) => Ok(Scan::Pending(error.to_string().chars().take(512).collect())),
     }
@@ -579,6 +736,14 @@ fn build_posts(
             pages.insert(name, text.clone());
             ensure!(pages.len() <= 64, "每篇文章最多 64 个可达页面");
         }
+        let mut page_names = std::collections::BTreeSet::new();
+        for name in pages.keys() {
+            let stem = name.rsplit_once('.').context("页面需要文件扩展名")?.0;
+            ensure!(
+                page_names.insert(stem),
+                "文章页面去除扩展名后的名称需要唯一"
+            );
+        }
         ensure!(
             images
                 .iter()
@@ -635,10 +800,11 @@ pub async fn persist(data: &Path, snapshot: &Snapshot) -> Result<()> {
         commit: snapshot.commit.clone(),
         revisions: BTreeMap::new(),
         pending: BTreeMap::new(),
+        policies: BTreeMap::new(),
         posts: snapshot
             .posts
             .iter()
-            .filter(|(_, p)| p.meta.status == Status::Published)
+            .filter(|(_, p)| snapshot.is_public(p))
             .map(|(k, p)| (k.clone(), p.clone()))
             .collect(),
     };

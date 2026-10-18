@@ -82,6 +82,12 @@ impl Level {
     }
 }
 #[derive(Clone)]
+pub struct AuthorDisplay {
+    pub nickname: String,
+    pub is_admin: bool,
+}
+
+#[derive(Clone)]
 pub struct User {
     pub id: i64,
     pub username: String,
@@ -103,6 +109,43 @@ impl User {
             "last_login_at":self.last_login_at,"permission_level":self.level.as_str()})
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessSource {
+    Password,
+    Granted,
+}
+impl AccessSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "PASSWORD",
+            Self::Granted => "GRANTED",
+        }
+    }
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "PASSWORD" => Ok(Self::Password),
+            "GRANTED" => Ok(Self::Granted),
+            _ => anyhow::bail!("未知文章授权来源"),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ArticleAccess {
+    pub user: User,
+    pub source: AccessSource,
+}
+
+/// One row of the queryable article-policy projection. collection.json remains authoritative.
+pub struct ArticlePolicyRow {
+    pub article: String,
+    pub visibility: String,
+    pub hidden: String,
+    pub review: String,
+    pub blocked_hash: Option<String>,
+    pub password_hash: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Store {
     pub database: Database,
@@ -242,9 +285,15 @@ impl Store {
             .map(|row| decode(row).map_err(Error::from))
             .collect()
     }
-    pub async fn display_names(&self) -> Result<std::collections::BTreeMap<String, String>> {
+    pub async fn display_authors(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, AuthorDisplay>> {
         let db = self.database.connect().await?;
-        let result = sql(&db, "SELECT username, nickname FROM blog_users LIMIT 1001").await?;
+        let result = sql(
+            &db,
+            "SELECT username, nickname, permission_level FROM blog_users LIMIT 1001",
+        )
+        .await?;
         db.close().await;
         require(
             !result.truncated && result.rows.len() <= 1000,
@@ -259,7 +308,18 @@ impl Store {
                     .and_then(Value::as_str)
                     .context("账户名称无效")?;
                 let nickname = row.get(1).and_then(Value::as_str).context("账户昵称无效")?;
-                Ok((name.to_owned(), nickname.to_owned()))
+                let is_admin = match row.get(2).and_then(Value::as_str) {
+                    Some("MASTER") => true,
+                    Some("BANNED" | "MEMBER" | "AUTHOR") => false,
+                    _ => return Err(Error::Database(anyhow::anyhow!("未知账户权限等级"))),
+                };
+                Ok((
+                    name.to_owned(),
+                    AuthorDisplay {
+                        nickname: nickname.to_owned(),
+                        is_admin,
+                    },
+                ))
             })
             .collect()
     }
@@ -392,6 +452,197 @@ impl Store {
         })
         .await
     }
+
+    pub async fn article_access_set(
+        &self,
+        user_id: i64,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        let db = self.database.connect().await?;
+        let query = Query::new("SELECT article FROM blog_article_access WHERE user_id = ")
+            .bind(user_id)
+            .push(" AND source = ")
+            .bind(AccessSource::Granted.as_str())
+            .push(" LIMIT 1001");
+        let result = sql(&db, query.as_str()).await?;
+        db.close().await;
+        require(
+            !result.truncated && result.rows.len() <= 1000,
+            "文章授权记录超过配额或被截断",
+        )?;
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                row.first()
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .context("文章授权记录无效")
+            })
+            .collect::<anyhow::Result<std::collections::BTreeSet<_>>>()
+            .map_err(Error::from)
+    }
+
+    pub async fn replace_article_policies(&self, rows: Vec<ArticlePolicyRow>) -> Result<()> {
+        require(rows.len() <= 1000, "文章策略记录超过配额")?;
+        self.transaction(|db| async move {
+            sql(&db, "DELETE FROM blog_article_policy").await?;
+            for row in rows {
+                let mut query = Query::new(
+                    "INSERT INTO blog_article_policy (article, visibility, hidden, review, blocked_hash, password_hash) VALUES (",
+                )
+                .bind(row.article.as_str())
+                .push(", ")
+                .bind(row.visibility.as_str())
+                .push(", ")
+                .bind(row.hidden.as_str())
+                .push(", ")
+                .bind(row.review.as_str())
+                .push(", ");
+                query = match row.blocked_hash {
+                    Some(hash) => query.bind(hash.as_str()),
+                    None => query.push("NULL"),
+                };
+                query = query.push(", ");
+                query = match row.password_hash {
+                    Some(hash) => query.bind(hash.as_str()),
+                    None => query.push("NULL"),
+                };
+                sql(&db, query.push(")").as_str()).await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn has_article_access(
+        &self,
+        user_id: i64,
+        article: &str,
+        source: AccessSource,
+    ) -> Result<bool> {
+        let db = self.database.connect().await?;
+        let query = Query::new("SELECT user_id FROM blog_article_access WHERE user_id = ")
+            .bind(user_id)
+            .push(" AND article = ")
+            .bind(article)
+            .push(" AND source = ")
+            .bind(source.as_str())
+            .push(" LIMIT 2");
+        let result = sql(&db, query.as_str()).await?;
+        db.close().await;
+        require(
+            !result.truncated && result.rows.len() <= 1,
+            "文章授权记录不唯一或被截断",
+        )?;
+        Ok(!result.rows.is_empty())
+    }
+
+    pub async fn grant_article_access(
+        &self,
+        user_id: i64,
+        article: &str,
+        source: AccessSource,
+    ) -> Result<()> {
+        self.transaction(|db| async move {
+            let delete = Query::new("DELETE FROM blog_article_access WHERE user_id = ")
+                .bind(user_id)
+                .push(" AND article = ")
+                .bind(article);
+            sql(&db, delete.as_str()).await?;
+            let insert = Query::new(
+                "INSERT INTO blog_article_access (id, user_id, article, source, created_at) VALUES (",
+            )
+            .bind(format!("{user_id}~{article}").as_str())
+            .push(", ")
+            .bind(user_id)
+            .push(", ")
+            .bind(article)
+            .push(", ")
+            .bind(source.as_str())
+            .push(", ")
+            .bind(now().as_str())
+            .push(")");
+            sql(&db, insert.as_str()).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Password rotation invalidates every PASSWORD grant for that article; explicit TOP grants remain.
+    pub async fn revoke_password_access(&self, article: &str) -> Result<()> {
+        self.revoke_access(article, AccessSource::Password).await
+    }
+
+    pub async fn revoke_granted_access(&self, article: &str) -> Result<()> {
+        self.revoke_access(article, AccessSource::Granted).await
+    }
+
+    async fn revoke_access(&self, article: &str, source: AccessSource) -> Result<()> {
+        let db = self.database.connect().await?;
+        let query = Query::new("DELETE FROM blog_article_access WHERE article = ")
+            .bind(article)
+            .push(" AND source = ")
+            .bind(source.as_str());
+        sql(&db, query.as_str()).await?;
+        db.close().await;
+        Ok(())
+    }
+
+    pub async fn revoke_article_access(&self, user_id: i64, article: &str) -> Result<()> {
+        let db = self.database.connect().await?;
+        let query = Query::new("DELETE FROM blog_article_access WHERE user_id = ")
+            .bind(user_id)
+            .push(" AND article = ")
+            .bind(article);
+        sql(&db, query.as_str()).await?;
+        db.close().await;
+        Ok(())
+    }
+
+    pub async fn article_access_users(&self, article: &str) -> Result<Vec<ArticleAccess>> {
+        let db = self.database.connect().await?;
+        let query = Query::new("SELECT user_id, source FROM blog_article_access WHERE article = ")
+            .bind(article)
+            .push(" LIMIT 1001");
+        let access = sql(&db, query.as_str()).await?;
+        let users = sql(&db, &format!("SELECT {COLUMNS} FROM blog_users LIMIT 1001")).await?;
+        db.close().await;
+        require(
+            !access.truncated
+                && access.rows.len() <= 1000
+                && !users.truncated
+                && users.rows.len() <= 1000,
+            "文章授权列表超过配额或被截断",
+        )?;
+        let users = users
+            .rows
+            .iter()
+            .map(|row| decode(row).map_err(Error::from))
+            .collect::<Result<Vec<_>>>()?;
+        access
+            .rows
+            .iter()
+            .map(|row| {
+                let user_id = row
+                    .first()
+                    .and_then(Value::as_i64)
+                    .context("文章授权用户 ID 无效")?;
+                let source = AccessSource::parse(
+                    row.get(1)
+                        .and_then(Value::as_str)
+                        .context("文章授权来源无效")?,
+                )?;
+                let user = users
+                    .iter()
+                    .find(|user| user.id == user_id)
+                    .cloned()
+                    .context("文章授权用户不存在")?;
+                Ok(ArticleAccess { user, source })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map_err(Error::from)
+    }
+
     pub async fn grant(&self, expected_actor: &User, name: &str, level: Level) -> Result<()> {
         self.transaction(|db| async move {
             let actor = get(&db, &expected_actor.username)
@@ -417,46 +668,5 @@ impl Store {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use argon2::PasswordHasher;
-
-    #[test]
-    fn permission_labels_decode_without_integer_or_unknown_fallback() {
-        let salt = argon2::password_hash::SaltString::encode_b64(b"account-test-salt").unwrap();
-        let hash = argon2::Argon2::default()
-            .hash_password(b"Test-password-123", &salt)
-            .unwrap()
-            .to_string();
-        let mut row = vec![
-            Value::from(1),
-            Value::from("alice"),
-            Value::from(hash),
-            Value::from("2026-01-01 00:00:00"),
-            Value::Null,
-            Value::Null,
-            Value::from("测试昵称"),
-        ];
-        for level in [Level::Banned, Level::Member, Level::Author, Level::Master] {
-            row[5] = Value::from(level.as_str());
-            let user = decode(&row).unwrap();
-            assert_eq!(user.level, level);
-            assert_eq!(user.view()["permission_level"], level.as_str());
-            assert!(user.view().get("password_hash").is_none());
-            assert_eq!(
-                Level::from_grant(level.grant().enabled, level.grant().role),
-                level
-            );
-        }
-        for invalid in [
-            Value::from(0),
-            Value::from(3),
-            Value::from("member"),
-            Value::from("UNKNOWN"),
-            Value::Null,
-        ] {
-            row[5] = invalid;
-            assert!(decode(&row).is_err());
-        }
-    }
-}
+#[path = "../../../test/api/accounts_db.rs"]
+mod tests;

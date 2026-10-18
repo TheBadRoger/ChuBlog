@@ -1,0 +1,22 @@
+---
+import Base from '../../layouts/Base.astro';
+import { readSession } from '../../lib/session';
+const session = await readSession(Astro);
+if (session.status === 'anonymous') return Astro.redirect('/login');
+const unavailable = session.status === 'unavailable';
+const allowed = session.status === 'authenticated' && session.account.permissions.role === 'admin';
+if (!allowed) Astro.response.status = unavailable ? 503 : 403;
+---
+<Base title="用户管理">
+  <div class="account-shell admin-shell" data-requires-role="admin">
+    {allowed ? <>
+      <header class="page-heading"><h1>用户管理</h1><p>管理用户的账户状态与权限等级。权限等级分为普通用户、作者和管理员。</p></header>
+      <section id="admin-section" class="settings-section" aria-labelledby="admin-heading">
+        <h2 id="admin-heading">用户权限</h2>
+        <p id="admin-status" class="form-status" role="status" aria-live="polite" data-loading="true">正在读取用户…</p>
+        <div id="admin-users" class="admin-users" aria-busy="true"></div>
+      </section>
+      <noscript><p class="notice">用户管理需要启用 JavaScript。</p></noscript>
+    </> : <div class="empty-state"><h1>{unavailable ? '暂时无法验证权限' : '需要管理员权限'}</h1><p>{unavailable ? '请稍后重试。' : '此页面仅向管理员开放。'}</p><a class="text-link" href={unavailable ? '/admin/users' : '/'}>{unavailable ? '重新加载' : '返回首页'}</a></div>}
+  </div>
+</Base>

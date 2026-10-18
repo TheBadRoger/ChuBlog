@@ -20,3 +20,28 @@ CREATE TABLE blog_site (
     installed_at TIMESTAMP NOT NULL,
     starter_commit CHAR(40)
 );
+
+CREATE TYPE blog_visibility AS ENUM ('DEFAULT', 'SECRET', 'CONFIDENTIAL', 'TOP');
+CREATE TYPE blog_hidden AS ENUM ('SEMI', 'FULL');
+CREATE TYPE blog_review AS ENUM ('OPEN', 'BLOCKED');
+
+-- Queryable projection of collection.json article policy. collection.json stays authoritative.
+CREATE TABLE blog_article_policy (
+    article VARCHAR(113) PRIMARY KEY,
+    visibility blog_visibility NOT NULL DEFAULT 'DEFAULT',
+    hidden blog_hidden NOT NULL DEFAULT 'FULL',
+    review blog_review NOT NULL DEFAULT 'OPEN',
+    blocked_hash CHAR(64),
+    password_hash VARCHAR(255)
+);
+
+CREATE TYPE blog_access_source AS ENUM ('PASSWORD', 'GRANTED');
+
+-- Durable reader grants: password unlocks and administrator/author TOP grants.
+CREATE TABLE blog_article_access (
+    id VARCHAR(134) PRIMARY KEY,
+    user_id INT NOT NULL,
+    article VARCHAR(113) NOT NULL,
+    source blog_access_source NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);

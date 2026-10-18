@@ -11,6 +11,7 @@ const description = state?.site?.description || '文章、随笔与开发记录�
 const owner = state?.owner;
 const links = [
   { title: '阅读文章', description: '浏览文章，按标签或关键词查找。', href: '/articles' },
+  { title: '精华文章', description: '阅读管理员选出的精华文章。', href: '/articles?featured=1' },
   { title: '账户与发布', description: '登录账户，管理密码与文章发布权限。', href: '/account' },
   ...(owner ? [
     { title: '发文章教程', description: '从克隆仓库到发布、更新与撤回。', href: postUrl(`${owner}~publishing`) },
@@ -31,13 +32,18 @@ const links = [
     {!state && <p class="site-unavailable" role="status">网站信息暂时不可用，已发布文章仍可阅读。</p>}
   </section>
 </Base>
+<script>import '../scripts/home';</script>
 <style>
   .home-hero { min-height: 100svh; display: grid; place-items: center; position: relative; overflow: hidden; isolation: isolate; padding: 90px 28px; }
   .home-hero header { text-align: center; max-width: 900px; z-index: 1; }
+  .home-hero h1 { animation: hero-arrive 850ms cubic-bezier(.2,.7,.2,1) both; }
+  .home-hero header p { animation: hero-arrive 850ms 100ms cubic-bezier(.2,.7,.2,1) both; }
   .hero-orbit { position: absolute; width: min(84vw, 840px); aspect-ratio: 1; border: 1px solid var(--line); border-radius: 50%; opacity: .55; transform: translate(32%, -4%) scaleY(.68) rotate(-18deg); animation: orbit 18s ease-in-out infinite alternate; }
   .hero-orbit::after { content: ''; position: absolute; inset: 28px -36px; border: 1px solid var(--line); border-radius: 50%; }
   .hero-scroll { position: absolute; bottom: 34px; display: grid; gap: 12px; text-align: center; font-size: 12px; color: var(--muted); padding: 10px 18px; }
-  .hero-scroll span:last-child { font-size: 21px; }
+  .hero-scroll span:last-child { font-size: 21px; animation: hero-hint 2.6s 1s ease-in-out 3; }
+  @keyframes hero-arrive { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes hero-hint { 50% { transform: translateY(5px); } }
   @keyframes orbit { to { transform: translate(30%, 0) scaleY(.72) rotate(-12deg); } }
   .navigation-home { width: min(100% - 48px, 760px); margin: 65px auto 100px; }
   h1 { font-size: clamp(40px, 8vw, 88px); font-weight: 500; letter-spacing: -.05em; line-height: 1.35; margin-bottom: 22px; overflow-wrap: anywhere; }

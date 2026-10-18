@@ -1,6 +1,6 @@
 # ChuBlog
 
-使用 Astro + TypeScript、Rust/Axum 和 ChuSQL 的个人博客。文章通过作者独立的 HTTPS Git 仓库发布，`index.toml` 管理文章元信息和多页正文。账户、权限及网站设置保存在 ChuSQL。
+使用 Astro + TypeScript、Rust/Axum 和 ChuSQL 的个人博客。文章通过作者独立的 HTTPS Git 仓库发布，`index.toml` 管理文章元信息和多页正文。账户、权限及网站设置保存在 ChuSQL。管理员可设置精华、文章可见性和查阅口令，并将文章下架。
 
 ## 快速开始
 
@@ -40,10 +40,17 @@
 
 更新使用 `scripts/update.sh`，卸载使用 `scripts/uninstall.sh`。可选数据库客户端通过 `scripts/deploy.sh --with-cli` 安装。配置、代理和完整命令见[部署文档](docs/deployment.md)。
 
+## 项目进度
+
+已实现安装与数据库账户、作者独立 Git 发布、多页阅读、四档可见性、半/全隐藏、管理员审核封禁、口令与指定用户持久授权，以及精华筛选。前端支持搜索、标签、分页、暗色模式和代码高亮。
+
+本地隔离 ChuSQL 的完整串行测试 40 项通过，前端 10 项测试、构建和 Clippy 通过。浏览器与真实 HTTPS 部署联调仍待验证。评论、互动统计、热度推荐和发布审核仍待实现，详见[项目进度](docs/progress.md)。
+
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
+| [项目进度](docs/progress.md) | 已完成功能、验证结果与后续工作 |
 | [部署](docs/deployment.md) | 首次安装、镜像源、代理、更新与卸载 |
 | [文章发布](docs/publishing.md) | 作者授权、索引格式与发布规则 |
 | [API](docs/API.md) | 接口、认证和响应 |

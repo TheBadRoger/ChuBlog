@@ -63,11 +63,7 @@ pub(crate) async fn rebuild_with_db(snapshot: &Snapshot, db: Client) -> Result<(
     }
     db.query("DELETE FROM blog_tags").await?;
     db.query("DELETE FROM blog_posts").await?;
-    for post in snapshot
-        .posts
-        .values()
-        .filter(|p| p.meta.status == Status::Published)
-    {
+    for post in snapshot.posts.values().filter(|p| snapshot.is_public(p)) {
         let meta = &post.meta;
         let published = to_timestamp(&meta.date)?;
         let updated = to_timestamp(&meta.updated)?;
@@ -171,7 +167,7 @@ pub async fn consistent(snapshot: &Snapshot) -> Result<bool> {
     let expected: std::collections::BTreeSet<_> = snapshot
         .posts
         .values()
-        .filter(|p| p.meta.status == Status::Published)
+        .filter(|p| snapshot.is_public(p))
         .map(|p| (p.meta.slug.as_str(), snapshot.commit.as_str()))
         .collect();
     let actual: std::collections::BTreeSet<_> = result
@@ -183,7 +179,7 @@ pub async fn consistent(snapshot: &Snapshot) -> Result<bool> {
     let tags = snapshot
         .posts
         .values()
-        .filter(|p| p.meta.status == Status::Published)
+        .filter(|p| snapshot.is_public(p))
         .map(|p| p.meta.tags.len())
         .sum::<usize>() as u64;
     let articles = db

@@ -11,7 +11,7 @@
     "build": "ASTRO_TELEMETRY_DISABLED=1 astro check && ASTRO_TELEMETRY_DISABLED=1 astro build",
     "start": "node dist/server/entry.mjs",
     "check": "ASTRO_TELEMETRY_DISABLED=1 astro check",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test ../../test/web/*.test.ts"
   },
   "dependencies": {
     "@astrojs/node": "11.1.8",

@@ -22,9 +22,9 @@ public = true
 ---
 <Base title="账户">
   <div class="account-shell">
-    <header class="page-heading"><h1>账户</h1><p id="account-status" role="status">正在读取账户…</p></header>
+    <header class="page-heading"><h1>账户</h1><p id="account-status" role="status" data-loading="true">正在读取账户…</p></header>
     <div id="account-content" hidden>
-      <div class="account-identity"><div><strong id="account-name"></strong><span class="role-label" id="account-role"></span></div><button id="logout" class="button button-quiet" type="button">退出登录</button></div>
+      <div class="account-identity"><div><strong id="account-name"></strong><small class="account-username" id="account-username"></small><span class="role-label" id="account-role"></span></div><button id="logout" class="button button-quiet" type="button">退出登录</button></div>
       <section class="settings-section" aria-labelledby="publishing-heading">
         <h2 id="publishing-heading">从本地发布文章</h2>
         <div class="prose publishing-guide">
@@ -43,7 +43,7 @@ public = true
           <details>
             <summary>查看 index.toml 示例</summary>
             <pre><code class="language-toml" set:html={highlightCode(indexExample, 'toml')} /></pre>
-            <p>作者和时间由系统生成。入口文档默认为 <code>main.md</code>，正文使用普通 Markdown，文章元信息集中写在 <code>index.toml</code> 中。</p>
+            <p>索引中的 <code>folder</code> 指定仓库内的文章目录，至少一层文件夹，支持嵌套目录，网页地址使用 <code>/posts/用户名/文章ID</code>。作者和时间由系统生成。入口文档默认为 <code>main.md</code>，正文使用普通 Markdown，文章元信息集中写在 <code>index.toml</code> 中。</p>
           </details>
         </div>
       </section>

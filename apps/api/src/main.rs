@@ -5,6 +5,7 @@ mod database;
 mod git_http;
 mod git_store;
 mod index;
+mod moderation;
 mod setup;
 mod starter;
 
@@ -21,10 +22,11 @@ use base64::Engine;
 use content::{Snapshot, Status};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -54,11 +56,14 @@ struct App {
     registration: bool,
     setup_token: String,
     site: Mutex<Option<Value>>,
-    nicknames: RwLock<std::collections::BTreeMap<String, String>>,
+    authors: RwLock<std::collections::BTreeMap<String, accounts_db::AuthorDisplay>>,
     accounts: Mutex<accounts::Accounts>,
     hash_slots: Arc<Semaphore>,
     git_slots: Arc<Semaphore>,
     snapshot: RwLock<Snapshot>,
+    article_changes: Mutex<()>,
+    // Only schedules retries; policy mutations and projections share the writer lock.
+    policy_projection_pending: AtomicBool,
     indexed: RwLock<Option<String>>,
     views: AtomicU64,
 }
@@ -94,80 +99,143 @@ fn origin(headers: &HeaderMap) -> ApiResult<bool> {
 
 fn display_metadata(
     meta: &content::Metadata,
-    nicknames: &std::collections::BTreeMap<String, String>,
+    authors: &std::collections::BTreeMap<String, accounts_db::AuthorDisplay>,
 ) -> Value {
     let mut value = json!(meta);
     value["author_name"] = json!(
-        nicknames
+        authors
             .get(&meta.author)
-            .map(String::as_str)
+            .map(|author| author.nickname.as_str())
             .unwrap_or("已注销用户")
+    );
+    value["author_is_admin"] = json!(
+        authors
+            .get(&meta.author)
+            .is_some_and(|author| author.is_admin)
     );
     value
 }
-async fn posts(State(app): State<Arc<App>>) -> Json<Value> {
+async fn posts(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let member = if headers.contains_key(header::COOKIE) {
+        match accounts::authorize(&app, &headers, false, false).await {
+            Ok(user) => Some(user),
+            Err(error) if matches!(error.0, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
+                None
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    let access = match &member {
+        Some(member) => moderation::access_set(&app, member.id).await?,
+        None => std::collections::BTreeSet::new(),
+    };
     let snapshot = app.snapshot.read().await;
     let mut posts: Vec<_> = snapshot
         .posts
         .values()
-        .filter(|p| p.meta.status == Status::Published)
-        .map(|p| &p.meta)
+        .filter(|post| moderation::listed(&snapshot, post, member.as_ref(), &access))
         .collect();
-    posts.sort_by(|a, b| b.date.cmp(&a.date).then(a.slug.cmp(&b.slug)));
-    let nicknames = app.nicknames.read().await;
-    Json(
-        json!({"commit": snapshot.commit, "posts": posts.into_iter().map(|meta| display_metadata(meta, &nicknames)).collect::<Vec<_>>()}),
-    )
+    posts.sort_by(|a, b| {
+        b.meta
+            .date
+            .cmp(&a.meta.date)
+            .then(a.meta.slug.cmp(&b.meta.slug))
+    });
+    let authors = app.authors.read().await;
+    Ok(Json(
+        json!({"commit": snapshot.commit, "posts": posts.into_iter().map(|post| moderation::metadata(&snapshot, post, &authors)).collect::<Vec<_>>()}),
+    ))
+}
+async fn my_articles(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let actor = accounts::authorize(&app, &headers, false, false).await?;
+    let snapshot = app.snapshot.read().await;
+    let authors = app.authors.read().await;
+    let posts = snapshot
+        .posts
+        .values()
+        .filter(|post| post.author == actor.username)
+        .map(|post| moderation::metadata(&snapshot, post, &authors))
+        .collect::<Vec<_>>();
+    let pending = snapshot
+        .pending
+        .iter()
+        .filter(|(author, _)| *author == &actor.username)
+        .map(|(author, item)| (author.clone(), item.clone()))
+        .collect::<BTreeMap<_, _>>();
+    Ok(Json(json!({"posts": posts, "pending": pending})))
 }
 async fn public_post(
     State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Path(key): Path<String>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Response> {
     let snapshot = app.snapshot.read().await;
     let post = snapshot
         .posts
         .get(&key)
-        .filter(|p| p.meta.status == Status::Published)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "文章不存在".into()))?;
+    if let moderation::Access::Locked(lock) =
+        moderation::check(&app, &headers, &snapshot, post).await?
+    {
+        return Ok(lock.response());
+    }
     // Relaxed is sufficient: this independent counter does not synchronize other state.
     app.views.fetch_add(1, Ordering::Relaxed);
-    let meta = display_metadata(&post.meta, &*app.nicknames.read().await);
+    let meta = moderation::metadata(&snapshot, post, &*app.authors.read().await);
     Ok(Json(
         json!({"meta": meta, "markdown": post.markdown, "format": post.format, "author": post.author, "article_id": post.article_id, "entry": post.entry, "pages": post.pages.keys().map(|name| json!({"name":name,"url":format!("/api/posts/{key}/pages/{name}")})).collect::<Vec<_>>(), "assets": post.assets.iter().map(|a| json!({"name": a.name, "url": format!("/api/assets/{key}/{}", a.name)})).collect::<Vec<_>>()}),
-    ))
+    )
+    .into_response())
 }
 async fn page(
     State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Path((key, name)): Path<(String, String)>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Response> {
     let snapshot = app.snapshot.read().await;
     let post = snapshot
         .posts
         .get(&key)
-        .filter(|p| p.meta.status == Status::Published)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "文章不存在".into()))?;
+    if let moderation::Access::Locked(lock) =
+        moderation::check(&app, &headers, &snapshot, post).await?
+    {
+        return Ok(lock.response());
+    }
     let text = post
         .pages
         .get(&name)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "页面不存在".into()))?;
     app.views.fetch_add(1, Ordering::Relaxed);
-    let meta = display_metadata(&post.meta, &*app.nicknames.read().await);
+    let meta = moderation::metadata(&snapshot, post, &*app.authors.read().await);
     Ok(Json(
         json!({"meta":meta,"name":name,"markdown":text,"format":if name.ends_with(".txt") { "text" } else { "markdown" },
         "pages":post.pages.keys().map(|page| json!({"name":page,"url":format!("/api/posts/{key}/pages/{page}")})).collect::<Vec<_>>(),
         "assets":post.assets.iter().map(|a| json!({"name":a.name,"url":format!("/api/assets/{key}/{}",a.name)})).collect::<Vec<_>>() }),
-    ))
+    )
+    .into_response())
 }
 async fn asset(
     State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Path((key, name)): Path<(String, String)>,
 ) -> ApiResult<Response> {
     let snapshot = app.snapshot.read().await;
-    let asset = snapshot
+    let post = snapshot
         .posts
         .get(&key)
-        .filter(|p| p.meta.status == Status::Published)
-        .and_then(|p| p.assets.iter().find(|a| a.name == name))
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "资源不存在".into()))?;
+    if let moderation::Access::Locked(lock) =
+        moderation::check(&app, &headers, &snapshot, post).await?
+    {
+        return Err(ApiError(lock.status, "无权访问".into()));
+    }
+    let asset = post
+        .assets
+        .iter()
+        .find(|a| a.name == name)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "资源不存在".into()))?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&asset.data)
@@ -191,7 +259,7 @@ async fn stats(State(app): State<Arc<App>>) -> Json<Value> {
     let posts: Vec<_> = snapshot
         .posts
         .values()
-        .filter(|p| p.meta.status == Status::Published)
+        .filter(|p| snapshot.is_public(p))
         .collect();
     let tags: std::collections::BTreeSet<_> = posts.iter().flat_map(|p| &p.meta.tags).collect();
     Json(
@@ -236,6 +304,18 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/admin/users", get(accounts::users))
         .route("/api/admin/users/{username}", patch(accounts::grant))
         .route("/api/admin/status", get(admin_status))
+        .route("/api/articles", get(my_articles))
+        .route("/api/admin/articles", get(moderation::list))
+        .route(
+            "/api/admin/articles/{slug}",
+            patch(moderation::update_admin).delete(moderation::delete),
+        )
+        .route("/api/articles/{slug}", patch(moderation::update_author))
+        .route(
+            "/api/articles/{slug}/access",
+            get(moderation::access_list).post(moderation::access_update),
+        )
+        .route("/api/posts/{slug}/unlock", post(moderation::unlock))
         .layer(DefaultBodyLimit::max(8 * 1024))
         .route("/git/{*path}", get(git_http::handle).post(git_http::handle))
         .layer(axum::middleware::from_fn(
@@ -263,12 +343,14 @@ async fn refresh(app: &App, source: &std::path::Path) -> Result<()> {
     if let Err(error) = starter::ensure(app).await {
         warn!(action = "starter_articles_pending", error = %error);
     }
+    let _guard = app.article_changes.lock().await;
     let current = app.snapshot.read().await.clone();
-    let nicknames = accounts::store(app).await.display_names().await?;
-    let identities = nicknames.keys().cloned().collect::<Vec<_>>();
-    *app.nicknames.write().await = nicknames;
-    let snapshot = git_store::import_authors(&app.data, source, &current, &identities).await?;
-    if snapshot.commit != current.commit || snapshot.pending != current.pending {
+    let authors = accounts::store(app).await.display_authors().await?;
+    let identities = authors.keys().cloned().collect::<Vec<_>>();
+    *app.authors.write().await = authors;
+    let mut snapshot = git_store::import_authors(&app.data, source, &current, &identities).await?;
+    let reopened = moderation::reopen_modified(app, &mut snapshot).await?;
+    if snapshot.commit != current.commit || snapshot.pending != current.pending || reopened {
         accounts::atomic(
             &app.data.join("collection.json"),
             &serde_json::to_vec(&snapshot)?,
@@ -276,8 +358,11 @@ async fn refresh(app: &App, source: &std::path::Path) -> Result<()> {
         )
         .await?;
         content::persist(&app.data, &snapshot).await?;
+        moderation::sync_policies(app, &snapshot)
+            .await
+            .map_err(|error| anyhow::anyhow!("同步文章策略失败: {}", error.1))?;
         info!(action = "published", revision = %snapshot.commit);
-        let changed = snapshot.commit != current.commit;
+        let changed = snapshot.commit != current.commit || reopened;
         *app.snapshot.write().await = snapshot;
         if changed {
             *app.indexed.write().await = None;
@@ -350,32 +435,48 @@ async fn run() -> Result<()> {
     );
     ensure!(source.is_absolute(), "INGRESS_DIR 必须是绝对路径");
     let accounts = accounts::load(accounts_db::Store::from_env()?).await?;
-    let nicknames = accounts.store.display_names().await.unwrap_or_default();
+    let authors = accounts.store.display_authors().await.unwrap_or_default();
     let app = Arc::new(App {
         data: data.clone(),
         repository: source.clone(),
         setup_token: setup::load_token(&data).await?,
         site: Mutex::new(None),
-        nicknames: RwLock::new(nicknames),
+        authors: RwLock::new(authors),
         registration: std::env::var("ALLOW_REGISTRATION").as_deref() == Ok("true"),
         accounts: Mutex::new(accounts),
         hash_slots: Arc::new(Semaphore::new(2)),
         git_slots: Arc::new(Semaphore::new(1)),
         snapshot: RwLock::new(snapshot),
+        article_changes: Mutex::new(()),
+        policy_projection_pending: AtomicBool::new(true),
         indexed: RwLock::new(None),
         views: AtomicU64::new(0),
     });
+    let initial = app.snapshot.read().await.clone();
+    if let Err(error) = moderation::sync_policies(&app, &initial).await {
+        warn!(action = "policy_projection_pending", error = %error.1);
+    }
     let worker_app = app.clone();
     let worker = tokio::spawn(async move {
         let mut ticks = 0;
+        let mut policy_retry_at = tokio::time::Instant::now();
         let mut retry_at = tokio::time::Instant::now();
         loop {
             if let Err(error) = refresh(&worker_app, &source).await {
                 warn!(action = "import_pending", error = %error);
             }
+            if worker_app.policy_projection_pending.load(Ordering::Relaxed)
+                && tokio::time::Instant::now() >= policy_retry_at
+            {
+                if let Err(error) = moderation::retry_policy_projection(&worker_app).await {
+                    warn!(action = "policy_projection_pending", error = %error.1);
+                }
+                policy_retry_at = tokio::time::Instant::now() + Duration::from_secs(30);
+            }
             if (ticks % 30 == 0 || worker_app.indexed.read().await.is_none())
                 && tokio::time::Instant::now() >= retry_at
             {
+                let _guard = worker_app.article_changes.lock().await;
                 let snapshot = worker_app.snapshot.read().await.clone();
                 if worker_app.indexed.read().await.as_deref() != Some(snapshot.commit.as_str()) {
                     sync_index(&worker_app, &snapshot).await;
@@ -411,4 +512,5 @@ async fn run() -> Result<()> {
 }
 
 #[cfg(test)]
+#[path = "../../../test/api/integration.rs"]
 mod tests;

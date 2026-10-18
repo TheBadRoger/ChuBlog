@@ -23,3 +23,5 @@
 deploy/bin
 deploy/secrets
 **/logs
+
+/test

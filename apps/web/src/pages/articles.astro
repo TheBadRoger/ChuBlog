@@ -2,17 +2,18 @@
 import Base from '../layouts/Base.astro';
 import { readApi, postUrl, displayDate, assetUrl, type Metadata } from '../lib/api';
 const query = (Astro.url.searchParams.get('q') || '').trim().slice(0, 100);
+const featured = Astro.url.searchParams.get('featured') === '1';
 const selectedTag = Astro.url.searchParams.get('tag') || '';
 let articles: Metadata[] = [];
 let failed = false;
-try { articles = (await readApi<{ posts: Metadata[] }>('/api/posts')).posts; }
+try { articles = (await readApi<{ posts: Metadata[] }>('/api/posts', { Cookie: Astro.request.headers.get('cookie') || '' })).posts; }
 catch { failed = true; Astro.response.status = 503; }
 const tags = [...new Set(articles.flatMap((article) => article.tags))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
-const filtered = articles.filter((article) => (!selectedTag || article.tags.includes(selectedTag)) && (!query || `${article.title} ${article.description} ${article.author_name} ${article.tags.join(' ')}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())));
+const filtered = articles.filter((article) => (!featured || article.featured) && (!selectedTag || article.tags.includes(selectedTag)) && (!query || `${article.title} ${article.description} ${article.author_name} ${article.tags.join(' ')}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())));
 const totalPages = Math.max(1, Math.ceil(filtered.length / 15));
 const page = Math.min(totalPages, Math.max(1, Number.parseInt(Astro.url.searchParams.get('page') || '1', 10) || 1));
 const visible = filtered.slice((page - 1) * 15, page * 15);
-const urlFor = (page: number) => { const params = new URLSearchParams(); if (query) params.set('q', query); if (selectedTag) params.set('tag', selectedTag); params.set('page', String(page)); return `/articles?${params}`; };
+const urlFor = (page: number) => { const params = new URLSearchParams(); if (featured) params.set('featured', '1'); if (query) params.set('q', query); if (selectedTag) params.set('tag', selectedTag); params.set('page', String(page)); return `/articles?${params}`; };
 ---
 <Base title="文章">
   <div class="page-shell">
@@ -20,24 +21,26 @@ const urlFor = (page: number) => { const params = new URLSearchParams(); if (que
     <form class="search-form" action="/articles" method="get" role="search">
       <label class="visually-hidden" for="search">搜索文章</label>
       <input id="search" type="search" autocomplete="off" name="q" value={query} placeholder="搜索标题、简介或标签" maxlength="100" />
+      {featured && <input type="hidden" name="featured" value="1" />}
       {selectedTag && <input type="hidden" name="tag" value={selectedTag} />}
       <button type="submit" class="button button-quiet">搜索</button>
     </form>
+    <nav class="tag-filter" aria-label="文章分类"><a href="/articles" aria-current={!featured ? 'true' : undefined}>全部文章</a><a href="/articles?featured=1" aria-current={featured ? 'true' : undefined}>精华文章</a></nav>
     {tags.length > 0 && <nav class="tag-filter" aria-label="按标签筛选">
-      <a href="/articles" aria-current={!selectedTag ? 'true' : undefined}>全部</a>
-      {tags.map((tag) => <a href={`/articles?tag=${encodeURIComponent(tag)}`} aria-current={tag === selectedTag ? 'true' : undefined}>{tag}</a>)}
+      <a href={featured ? '/articles?featured=1' : '/articles'} aria-current={!selectedTag ? 'true' : undefined}>全部</a>
+      {tags.map((tag) => <a href={`/articles?${featured ? 'featured=1&' : ''}tag=${encodeURIComponent(tag)}`} aria-current={tag === selectedTag ? 'true' : undefined}>{tag}</a>)}
     </nav>}
     {failed ? <div class="empty-state" role="status"><h2>文章暂时无法加载</h2><p>请稍后重试。</p><a class="text-link" href={Astro.url.pathname + Astro.url.search}>重新加载</a></div>
       : visible.length === 0 ? <div class="empty-state"><h2>{query || selectedTag ? '没有匹配的文章' : '还没有公开文章'}</h2><p>{query || selectedTag ? '换个关键词，或查看全部文章。' : '文章发布后会出现在这里。'}</p><a class="text-link" href={query || selectedTag ? '/articles' : '/account'}>{query || selectedTag ? '查看全部文章' : '前往账户'}</a></div>
       : <ol class="article-list">{visible.map((article) => <li>
         <article class:list={{ 'article-with-cover': article.cover }}>
           <div class="article-summary">
-            <div class="article-meta"><time datetime={article.date}>{displayDate(article.date)}</time><span>{article.author_name}</span></div>
-            <h2><a href={postUrl(article.slug)}>{article.title}</a></h2>
+            <div class="article-meta"><time datetime={article.date}>{displayDate(article.date)}</time><span>{article.author_name}{article.author_is_admin && <small class="author-badge">管理员</small>}</span></div>
+            <h2>{article.featured && <small class="author-badge">精华</small>}{article.review === 'blocked' && <small class="author-badge">已封禁</small>}{article.visibility === 'secret' && <small class="author-badge">秘密{article.password_required ? ' · 口令' : ''}</small>}{article.visibility === 'confidential' && <small class="author-badge">机密</small>}{article.visibility === 'top' && <small class="author-badge">绝密{article.hidden === 'semi' ? ' · 半隐藏' : ''}</small>}<a href={postUrl(article.slug)}>{article.title}</a></h2>
             {article.description && <p>{article.description}</p>}
             {article.tags.length > 0 && <div class="article-tags">{article.tags.map((tag) => <a href={`/articles?tag=${encodeURIComponent(tag)}`}>{tag}</a>)}</div>}
           </div>
-          {article.cover && <a href={postUrl(article.slug)} class="article-cover" aria-label={`阅读 ${article.title}`}><img src={assetUrl(article.slug, article.cover)} alt="" width="160" height="112" loading="lazy" /></a>}
+          {article.cover && (!article.visibility || article.visibility === 'default') && <a href={postUrl(article.slug)} class="article-cover" aria-label={`阅读 ${article.title}`}><img src={assetUrl(article.slug, article.cover)} alt="" width="160" height="112" loading="lazy" /></a>}
         </article>
       </li>)}</ol>}
     {totalPages > 1 && <nav class="pagination" aria-label="文章分页">{page > 1 ? <a href={urlFor(page - 1)}>上一页</a> : <span /> }<span>{page} / {totalPages}</span>{page < totalPages ? <a href={urlFor(page + 1)}>下一页</a> : <span />}</nav>}

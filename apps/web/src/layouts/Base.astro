@@ -1,15 +1,20 @@
 ---
 import '../styles/global.css';
 import { readApi, type SiteState } from '../lib/api';
+import { readSession } from '../lib/session';
 interface Props { title?: string; description?: string; home?: boolean; site?: SiteState['site'] }
 const { title, description, home = false } = Astro.props;
-let metadata = Astro.props.site;
-if (metadata === undefined) {
-  try { metadata = (await readApi<SiteState>('/api/site')).site; } catch {}
-}
+const [session, metadata] = await Promise.all([
+  readSession(Astro),
+  Astro.props.site === undefined
+    ? readApi<SiteState>('/api/site').then(state => state.site).catch(() => null)
+    : Promise.resolve(Astro.props.site),
+]);
+const account = session.status === 'authenticated' ? session.account : null;
 const site = metadata?.name || 'ChuBlog';
 const pageDescription = description ?? metadata?.description ?? '文章与随笔。';
 const path = Astro.url.pathname;
+const role = account?.permissions.role ?? null;
 ---
 <!doctype html>
 <html lang="zh-CN">
@@ -22,31 +27,30 @@ const path = Astro.url.pathname;
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>{title ? `${title} · ${site}` : site}</title>
   </head>
-  <body class:list={{ 'home-page': home }}>
+  <body data-session={JSON.stringify(session)} class:list={{ 'home-page': home }}>
+    <div id="page-progress" class="page-progress" role="status" hidden><span class="visually-hidden">正在加载页面…</span></div>
     <a class="skip-link" href="#main">跳到正文</a>
     <slot name="hero" />
     <div class="page-frame">
     <header class="site-header" id="navigation">
       <nav class="site-nav" aria-label="主导航">
-        <a href="/" aria-current={path === '/' ? 'page' : undefined}>首页</a>
-        <a href="/articles" aria-current={path.startsWith('/articles') || path.startsWith('/posts/') ? 'page' : undefined}>文章</a>
-        <a href="/login" data-account-link aria-current={path === '/account' || path === '/login' ? 'page' : undefined}>登录</a>
-        <a href="/admin" data-admin-link hidden aria-current={path === '/admin' ? 'page' : undefined}>管理员页面</a>
+        <a href="/" aria-current={path === '/' ? 'page' : undefined}>首页<span class="nav-underline" aria-hidden="true"></span></a>
+        <a href="/articles" aria-current={path.startsWith('/articles') || path.startsWith('/posts/') ? 'page' : undefined}>文章<span class="nav-underline" aria-hidden="true"></span></a>
+        <a href={session.status === 'anonymous' ? '/login' : '/account'} data-account-link data-loading={session.status === 'unavailable' ? 'true' : undefined} aria-current={path === '/account' || path === '/login' ? 'page' : undefined}>{session.status === 'anonymous' ? '登录' : '账户'}<span class="nav-underline" aria-hidden="true"></span></a>
+        <a href="/admin/users" data-users-link hidden={role !== 'admin'} aria-current={path.startsWith('/admin/users') ? 'page' : undefined}>用户管理<span class="nav-underline" aria-hidden="true"></span></a>
+        <a href="/admin/articles" data-articles-link hidden={role !== 'publisher' && role !== 'admin'} aria-current={path.startsWith('/admin/articles') ? 'page' : undefined}>文章管理<span class="nav-underline" aria-hidden="true"></span></a>
 
       </nav>
+      <p id="session-status" class="session-status" role="status" hidden><span id="session-message"></span> <button type="button" class="session-retry" id="session-retry">重试</button></p>
     </header>
     <main id="main" tabindex="-1"><slot /></main>
     <footer class="site-footer"><span>{site}</span><span>© {new Date().getFullYear()}</span></footer>
     </div>
-    <div class="theme-switch" role="group" aria-label="外观模式">
-      <button type="button" data-theme-mode="light" aria-label="浅色模式" title="浅色模式" aria-pressed="false">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg>
-      </button>
-      <button type="button" data-theme-mode="dark" aria-label="深色模式" title="深色模式" aria-pressed="false">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 13.5A8.7 8.7 0 0 1 10.5 3a8.8 8.8 0 1 0 10 10.5Z" /></svg>
-      </button>
-      <button type="button" data-theme-mode="system" aria-label="跟随系统" title="跟随系统" aria-pressed="true">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-.5 2.4-1.8 1L4.4 6 2.9 8.6l1.8 1.6v2.1L2.9 14l1.5 2.6 2.3-.4 1.8 1L9 20h3l.5-2.8 1.8-1 2.3.4 1.5-2.6-1.8-1.7v-2.1l1.8-1.6L16.6 6l-2.3.4-1.8-1L12 3Z" transform="translate(1.5 .5)" /><circle cx="12" cy="12" r="3" /></svg>
+    <div class="theme-switch">
+      <button type="button" data-theme-toggle aria-label="当前跟随系统，切换为浅色模式" title="当前跟随系统，切换为浅色模式">
+        <span data-theme-icon="light" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg></span>
+        <span data-theme-icon="dark" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 13.5A8.7 8.7 0 0 1 10.5 3a8.8 8.8 0 1 0 10 10.5Z" /></svg></span>
+        <span data-theme-icon="system"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-.5 2.4-1.8 1L4.4 6 2.9 8.6l1.8 1.6v2.1L2.9 14l1.5 2.6 2.3-.4 1.8 1L9 20h3l.5-2.8 1.8-1 2.3.4 1.5-2.6-1.8-1.7v-2.1l1.8-1.6L16.6 6l-2.3.4-1.8-1L12 3Z" transform="translate(1.5 .5)" /><circle cx="12" cy="12" r="3" /></svg></span>
       </button>
     </div>
     <script>import '../scripts/client';</script>
